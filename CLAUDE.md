@@ -2,11 +2,42 @@
 
 Custom KubeJS scripts for ATM10 (All The Mods 10) Minecraft server.
 
+## Commit Convention
+
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+```
+
+### Types
+- `feat` - New feature
+- `fix` - Bug fix
+- `docs` - Documentation only
+- `refactor` - Code change that neither fixes a bug nor adds a feature
+- `chore` - Maintenance tasks
+
+### Scopes
+- `kubeshop` - Economy & shop system
+- `discord` - Discord integration
+- `rules` - Server rules
+- `resourcepack` - Coin textures
+
+### Examples
+```
+feat(kubeshop): add coin deposit command
+fix(kubeshop): fix balance not saving on server restart
+docs: update README with installation steps
+refactor(kubeshop): simplify coin detection logic
+```
+
 ## Project Structure
 
 ```
 atm10/
-├── KubeShop/           # Economy & Shop system
+├── kubeshop/           # Economy & Shop system
 │   ├── kubejs/
 │   │   └── server_scripts/
 │   │       └── kubeshop.js
