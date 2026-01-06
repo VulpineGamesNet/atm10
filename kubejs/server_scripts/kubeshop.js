@@ -17,13 +17,13 @@ const BYPASS_KEY = "bypass"
 
 // Coin denominations for withdraw/deposit (ordered largest to smallest for greedy algorithm)
 // Uses vanilla paper items with CustomModelData NBT for server-side only implementation
-const COIN_BASE_ITEM = 'minecraft:paper'
+const COIN_BASE_ITEM = 'minecraft:sunflower'
 const COIN_DENOMINATIONS = [
-  { value: 10000, customModelData: 710000, name: 'Coin Vault', lore: 'Worth $10,000' },
-  { value: 1000,  customModelData: 719999, name: 'Coin Chest', lore: 'Worth $1,000' },
-  { value: 100,   customModelData: 719100, name: 'Coin Bag',   lore: 'Worth $100' },
-  { value: 10,    customModelData: 719010, name: 'Coin Stack', lore: 'Worth $10' },
-  { value: 1,     customModelData: 719001, name: 'Coin',       lore: 'Worth $1' }
+  { value: 10000, customModelData: 710000, name: 'Coin', lore: 'Worth $10,000', color: 'gold' },
+  { value: 1000,  customModelData: 719999, name: 'Coin', lore: 'Worth $1,000',  color: 'light_purple' },
+  { value: 100,   customModelData: 719100, name: 'Coin', lore: 'Worth $100',    color: 'blue' },
+  { value: 10,    customModelData: 719010, name: 'Coin', lore: 'Worth $10',     color: 'green' },
+  { value: 1,     customModelData: 719001, name: 'Coin', lore: 'Worth $1',      color: 'white' }
 ]
 
 // ============================================================================
@@ -281,23 +281,49 @@ function formatTimestamp(timestamp) {
 // COIN SYSTEM - Helper Functions (NBT-based paper items)
 // ============================================================================
 
-// Create a coin item with proper NBT tags
+// Create a coin item with proper components (1.21+ format)
 function createCoinItem(denom, count) {
-  let nbtString = '{CustomModelData:' + denom.customModelData + ',' +
-    'display:{' +
-    'Name:\'{"text":"' + denom.name + '","color":"gold","italic":false}\',' +
-    'Lore:[\'{"text":"' + denom.lore + '","color":"gray","italic":false}\']' +
-    '}}'
-  return Item.of(COIN_BASE_ITEM, count, nbtString)
+  // Use the new 1.21 component syntax: item[component=value,...]
+  // custom_name uses JSON text component format
+  // lore uses JSON array of text components
+  // Note: In 1.21.1, custom_model_data is still a simple integer
+  // In 1.21.4+, it becomes a complex structure with floats/flags/strings/colors
+  let itemString = COIN_BASE_ITEM + '[' +
+    'minecraft:custom_model_data=' + denom.customModelData + ',' +
+    'minecraft:custom_name=\'{"text":"' + denom.name + '","color":"' + denom.color + '","italic":false}\',' +
+    'minecraft:lore=[\'{"text":"' + denom.lore + '","color":"gray","italic":false}\']' +
+    ']'
+  return Item.of(itemString).withCount(count)
 }
 
 // Get the CustomModelData from an item stack (returns 0 if not present)
+// In 1.21+, custom_model_data is a data component, not NBT
 function getItemCustomModelData(stack) {
   if (!stack || stack.isEmpty()) return 0
-  let nbt = stack.getNbt()
-  if (!nbt) return 0
-  if (nbt.contains && !nbt.contains('CustomModelData')) return 0
-  return nbt.getInt ? nbt.getInt('CustomModelData') : 0
+
+  // Try 1.21+ component access first
+  try {
+    // In 1.21, use the components API
+    let customModelData = stack.get('custom_model_data')
+    if (customModelData !== null && customModelData !== undefined) {
+      // customModelData can be an integer or an object with value property
+      if (typeof customModelData === 'number') return customModelData
+      if (customModelData.value) return customModelData.value
+      return customModelData
+    }
+  } catch(e) {
+    // Fall through to legacy method
+  }
+
+  // Fallback: try legacy NBT access (pre-1.21)
+  try {
+    let nbt = stack.getNbt()
+    if (!nbt) return 0
+    if (nbt.contains && !nbt.contains('CustomModelData')) return 0
+    return nbt.getInt ? nbt.getInt('CustomModelData') : 0
+  } catch(e) {
+    return 0
+  }
 }
 
 // Get the coin denomination info from an item stack (returns null if not a coin)
@@ -1134,12 +1160,15 @@ ServerEvents.loaded(event => {
     let profileCache = event.server.getProfileCache()
     if (profileCache) {
       let initializedCount = 0
-      // Get all cached profiles using the load method or iterate if available
+      // Get all cached profiles using the load method
+      // load() returns Stream<GameProfileInfo>, where GameProfileInfo wraps GameProfile
       let profiles = profileCache.load()
       if (profiles && profiles.iterator) {
         let iterator = profiles.iterator()
         while (iterator.hasNext()) {
-          let profile = iterator.next()
+          let profileInfo = iterator.next()
+          // GameProfileInfo has getProfile() method to get the actual GameProfile
+          let profile = profileInfo.getProfile ? profileInfo.getProfile() : profileInfo
           let uuid = profile.getId().toString()
           if (balancesCache[uuid] === undefined) {
             balancesCache[uuid] = STARTING_BALANCE
