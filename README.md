@@ -21,18 +21,17 @@ Custom KubeJS scripts for [All The Mods 10](https://www.curseforge.com/minecraft
 
 ## Installation
 
-1. Copy the contents of each `kubejs/server_scripts/` folder to your server's `kubejs/server_scripts/`
+1. Copy `kubejs/` folder to your Minecraft instance
+2. Copy `resourcepacks/vulpinegames-resources/` to your instance's `resourcepacks/` folder
+3. Reload scripts: `/kubejs reload server_scripts`
+4. Enable the resource pack in-game (Options → Resource Packs)
 
-2. Reload scripts:
-   ```
-   /kubejs reload server_scripts
-   ```
-
-3. (Optional) For custom coin textures, host `KubeShop/resourcepack/kubeshop-resources.zip` and add to `server.properties`:
-   ```properties
-   resource-pack=https://your-url.com/kubeshop-resources.zip
-   resource-pack-sha1=f663ccec389cba9c0d37087db95be25808fae8ac
-   ```
+### Server Resource Pack (Optional)
+To auto-push textures to players, add to `server.properties`:
+```properties
+resource-pack=https://github.com/VulpineGamesNet/atm10/releases/download/v1.0.0/kubeshop-resources.zip
+resource-pack-sha1=40276b79eac981f3f0ac55f4c10990e4361bb5fa
+```
 
 ## Commands
 

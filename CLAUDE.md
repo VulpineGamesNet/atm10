@@ -37,26 +37,21 @@ refactor(kubeshop): simplify coin detection logic
 
 ```
 atm10/
-├── kubeshop/           # Economy & Shop system
-│   ├── kubejs/
-│   │   └── server_scripts/
-│   │       └── kubeshop.js
-│   └── resourcepack/   # Optional coin textures
-├── discord/            # Discord integration
-│   └── kubejs/
-│       └── server_scripts/
-│           └── discord_command.js
-└── rules/              # Server rules command
-    └── kubejs/
-        └── server_scripts/
-            └── rules_command.js
+├── kubejs/
+│   └── server_scripts/
+│       ├── kubeshop.js         # Economy & shop system
+│       ├── discord_command.js  # Discord integration
+│       └── rules_command.js    # Server rules
+└── resourcepacks/
+    └── vulpinegames-resources/ # Custom coin textures
 ```
 
 ## Installation
 
-Copy contents of each `kubejs/` folder to the server's `kubejs/` folder:
+Copy the `kubejs/` and `resourcepacks/` folders to your Minecraft instance:
 ```
-<minecraft-instance>/kubejs/server_scripts/
+<minecraft-instance>/kubejs/
+<minecraft-instance>/resourcepacks/
 ```
 
 ## KubeShop Economy System
