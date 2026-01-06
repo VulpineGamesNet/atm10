@@ -1,13 +1,13 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "minecraft:item/paper"
+    "layer0": "minecraft:block/sunflower_front"
   },
   "overrides": [
+    {"predicate": {"custom_model_data": 710000}, "model": "minecraft:item/kubeshop/coin_10000"},
     {"predicate": {"custom_model_data": 719001}, "model": "minecraft:item/kubeshop/coin_1"},
     {"predicate": {"custom_model_data": 719010}, "model": "minecraft:item/kubeshop/coin_10"},
     {"predicate": {"custom_model_data": 719100}, "model": "minecraft:item/kubeshop/coin_100"},
-    {"predicate": {"custom_model_data": 719999}, "model": "minecraft:item/kubeshop/coin_1000"},
-    {"predicate": {"custom_model_data": 710000}, "model": "minecraft:item/kubeshop/coin_10000"}
+    {"predicate": {"custom_model_data": 719999}, "model": "minecraft:item/kubeshop/coin_1000"}
   ]
 }
