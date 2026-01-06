@@ -6,7 +6,12 @@ Custom KubeJS scripts for [All The Mods 10](https://www.curseforge.com/minecraft
 
 ### KubeShop - Economy & Shop System
 - Virtual wallet with persistent balance
-- Physical coin items ($1, $10, $100, $1000, $10000)
+- Physical coin items with Minecraft rarity colors:
+  - $1 (Common - White)
+  - $10 (Uncommon - Green)
+  - $100 (Rare - Blue)
+  - $1,000 (Epic - Light Purple)
+  - $10,000 (Legendary - Gold)
 - Player-to-player payments
 - Sign-based chest shops (buy & sell)
 - Transaction history
@@ -29,8 +34,8 @@ Custom KubeJS scripts for [All The Mods 10](https://www.curseforge.com/minecraft
 ### Server Resource Pack (Optional)
 To auto-push textures to players, add to `server.properties`:
 ```properties
-resource-pack=https://github.com/VulpineGamesNet/atm10/releases/download/v1.0.0/kubeshop-resources.zip
-resource-pack-sha1=40276b79eac981f3f0ac55f4c10990e4361bb5fa
+resource-pack=https://github.com/VulpineGamesNet/atm10/releases/download/v1.1.0/vulpinegames-resources.zip
+resource-pack-sha1=94f876b7f44a650eaba7f5c2b053390aab49a6f6
 ```
 
 ## Commands
