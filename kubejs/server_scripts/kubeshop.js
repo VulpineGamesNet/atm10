@@ -301,29 +301,52 @@ function createCoinItem(denom, count) {
 function getItemCustomModelData(stack) {
   if (!stack || stack.isEmpty()) return 0
 
-  // Try 1.21+ component access first
+  // Try 1.21+ component access
   try {
-    // In 1.21, use the components API
-    let customModelData = stack.get('custom_model_data')
+    let customModelData = stack.get('minecraft:custom_model_data')
     if (customModelData !== null && customModelData !== undefined) {
-      // customModelData can be an integer or an object with value property
+      // Direct number
       if (typeof customModelData === 'number') return customModelData
-      if (customModelData.value) return customModelData.value
-      return customModelData
+
+      // Object with .value property (direct access)
+      if (typeof customModelData === 'object') {
+        // Try .value() method first (Java getter)
+        if (typeof customModelData.value === 'function') {
+          return customModelData.value()
+        }
+        // Try .value property
+        if (customModelData.value !== undefined) {
+          return customModelData.value
+        }
+        // Try .getValue() method
+        if (typeof customModelData.getValue === 'function') {
+          return customModelData.getValue()
+        }
+        // Parse from toString() - "CustomModelData[value=719001]"
+        // Rhino doesn't support regex .match(), so parse manually
+        let str = customModelData.toString()
+        let valueIdx = str.indexOf("value=")
+        if (valueIdx !== -1) {
+          let startIdx = valueIdx + 6  // length of "value="
+          let endIdx = startIdx
+          while (endIdx < str.length && str.charAt(endIdx) >= '0' && str.charAt(endIdx) <= '9') {
+            endIdx++
+          }
+          if (endIdx > startIdx) {
+            return parseInt(str.substring(startIdx, endIdx))
+          }
+        }
+      }
+
+      // Try parsing directly
+      let parsed = parseInt(customModelData)
+      if (!isNaN(parsed)) return parsed
     }
   } catch(e) {
-    // Fall through to legacy method
+    console.warn("[KubeShop] Error reading custom_model_data: " + e)
   }
 
-  // Fallback: try legacy NBT access (pre-1.21)
-  try {
-    let nbt = stack.getNbt()
-    if (!nbt) return 0
-    if (nbt.contains && !nbt.contains('CustomModelData')) return 0
-    return nbt.getInt ? nbt.getInt('CustomModelData') : 0
-  } catch(e) {
-    return 0
-  }
+  return 0
 }
 
 // Get the coin denomination info from an item stack (returns null if not a coin)
@@ -447,7 +470,7 @@ function removeCoinsFromPlayer(player, amount) {
           // Properly update inventory - shrink and set back to ensure update
           stack.shrink(toRemove)
           if (stack.isEmpty()) {
-            inv.setItem(i, Item.empty())
+            inv.setItem(i, Item.of('minecraft:air'))
           } else {
             inv.setItem(i, stack)
           }
@@ -2045,7 +2068,47 @@ ServerEvents.commandRegistry(event => {
           let srv = ctx.getSource().getServer()
           let pUuid = player.getStringUuid()
 
+          // Debug: Log inventory contents to find coins
+          let inv = player.getInventory()
+          let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 36)
+          console.info("[KubeShop Debug] Scanning " + slots + " slots for coins (looking for " + COIN_BASE_ITEM + ")")
+          for (let i = 0; i < slots; i++) {
+            let stack = inv.getStackInSlot ? inv.getStackInSlot(i) : inv.getItem(i)
+            if (stack && !stack.isEmpty()) {
+              let itemId = stack.getId()
+              if (itemId === COIN_BASE_ITEM || itemId.indexOf('sunflower') !== -1) {
+                console.info("[KubeShop Debug] Slot " + i + ": " + itemId + " x" + stack.getCount())
+                // Try to get custom model data using various methods
+                try {
+                  let cmd1 = stack.get('minecraft:custom_model_data')
+                  console.info("[KubeShop Debug]   get('minecraft:custom_model_data'): " + cmd1 + " (type: " + typeof cmd1 + ")")
+                } catch(e) {
+                  console.info("[KubeShop Debug]   get('minecraft:custom_model_data') error: " + e)
+                }
+                try {
+                  let cmd2 = stack.get('custom_model_data')
+                  console.info("[KubeShop Debug]   get('custom_model_data'): " + cmd2 + " (type: " + typeof cmd2 + ")")
+                } catch(e) {
+                  console.info("[KubeShop Debug]   get('custom_model_data') error: " + e)
+                }
+                try {
+                  let nbt = stack.getNbt()
+                  console.info("[KubeShop Debug]   getNbt(): " + nbt)
+                } catch(e) {
+                  console.info("[KubeShop Debug]   getNbt() error: " + e)
+                }
+                try {
+                  // Log the full item string representation
+                  console.info("[KubeShop Debug]   toString(): " + stack.toString())
+                } catch(e) {
+                  console.info("[KubeShop Debug]   toString() error: " + e)
+                }
+              }
+            }
+          }
+
           let coinInfo = countPlayerCoins(player)
+          console.info("[KubeShop Debug] countPlayerCoins result: total=" + coinInfo.total + ", breakdown=" + JSON.stringify(coinInfo.breakdown))
           if (coinInfo.total <= 0) {
             ctx.getSource().sendFailure(Component.red("You don't have any coins to deposit"))
             return 0
