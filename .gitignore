@@ -19,3 +19,11 @@ Thumbs.db
 
 # Build artifacts
 *.zip
+
+# Discord bot
+discord_bot/.env
+discord_bot/__pycache__/
+discord_bot/.venv/
+discord_bot/.pytest_cache/
+discord_bot/tests/__pycache__/
+*.pyc
