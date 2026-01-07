@@ -15,8 +15,12 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY bot.py config.py ./
 
-# Set environment variables
+# Set uv cache to writable location
+ENV UV_CACHE_DIR=/app/.cache/uv
 ENV PYTHONUNBUFFERED=1
+
+# Make app directory writable for any user
+RUN chmod -R 777 /app
 
 # Run the bot using uv
 CMD ["uv", "run", "python", "bot.py"]
