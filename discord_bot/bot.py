@@ -10,12 +10,13 @@ import asyncio
 import json
 import logging
 import re
+import struct
+import socket
 from pathlib import Path
 from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
-from mcrcon import MCRcon
 
 from config import load_config, Config
 
@@ -63,13 +64,62 @@ class MinecraftBridge(commands.Cog):
                 return None
 
     def _rcon_sync(self, command: str) -> str:
-        """Synchronous RCON command execution."""
-        with MCRcon(
-            self.config.minecraft.rcon_host,
-            self.config.minecraft.rcon_password,
-            port=self.config.minecraft.rcon_port,
-        ) as mcr:
-            return mcr.command(command)
+        """Synchronous RCON command execution using raw sockets."""
+        SERVERDATA_AUTH = 3
+        SERVERDATA_AUTH_RESPONSE = 2
+        SERVERDATA_EXECCOMMAND = 2
+        SERVERDATA_RESPONSE_VALUE = 0
+
+        def send_packet(sock: socket.socket, packet_id: int, packet_type: int, payload: str) -> None:
+            """Send an RCON packet."""
+            payload_bytes = payload.encode("utf-8") + b"\x00\x00"
+            packet = struct.pack("<ii", packet_id, packet_type) + payload_bytes
+            packet = struct.pack("<i", len(packet)) + packet
+            sock.sendall(packet)
+
+        def recv_packet(sock: socket.socket) -> tuple[int, int, str]:
+            """Receive an RCON packet."""
+            # Read packet length
+            length_data = sock.recv(4)
+            if len(length_data) < 4:
+                raise ConnectionError("Failed to read packet length")
+            length = struct.unpack("<i", length_data)[0]
+
+            # Read packet data
+            data = b""
+            while len(data) < length:
+                chunk = sock.recv(length - len(data))
+                if not chunk:
+                    raise ConnectionError("Connection closed")
+                data += chunk
+
+            packet_id = struct.unpack("<i", data[0:4])[0]
+            packet_type = struct.unpack("<i", data[4:8])[0]
+            payload = data[8:-2].decode("utf-8")
+
+            return packet_id, packet_type, payload
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+
+        try:
+            sock.connect((self.config.minecraft.rcon_host, self.config.minecraft.rcon_port))
+
+            # Authenticate
+            send_packet(sock, 1, SERVERDATA_AUTH, self.config.minecraft.rcon_password)
+            packet_id, packet_type, _ = recv_packet(sock)
+
+            if packet_id == -1:
+                raise ConnectionError("RCON authentication failed")
+
+            # Send command
+            send_packet(sock, 2, SERVERDATA_EXECCOMMAND, command)
+            _, _, response = recv_packet(sock)
+
+            return response
+
+        finally:
+            sock.close()
 
     def read_stats_file(self) -> Optional[dict]:
         """Read server stats from file written by KubeJS."""
