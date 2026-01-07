@@ -1,7 +1,7 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "minecraft:block/sunflower_front"
+    "layer0": "minecraft:item/gold_nugget"
   },
   "overrides": [
     {"predicate": {"custom_model_data": 710000}, "model": "minecraft:item/kubeshop/coin_10000"},

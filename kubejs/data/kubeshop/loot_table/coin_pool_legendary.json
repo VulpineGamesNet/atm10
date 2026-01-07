@@ -1,0 +1,85 @@
+{
+  "pools": [
+    {
+      "rolls": 1,
+      "bonus_rolls": 0,
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:gold_nugget",
+          "weight": 100,
+          "functions": [
+            {
+              "function": "minecraft:set_components",
+              "components": {
+                "minecraft:custom_model_data": 719001,
+                "minecraft:custom_name": "{\"text\":\"Coin\",\"color\":\"white\",\"italic\":false}",
+                "minecraft:lore": ["{\"text\":\"Worth $1\",\"color\":\"gray\",\"italic\":false}"]
+              }
+            }
+          ]
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:gold_nugget",
+          "weight": 50,
+          "functions": [
+            {
+              "function": "minecraft:set_components",
+              "components": {
+                "minecraft:custom_model_data": 719010,
+                "minecraft:custom_name": "{\"text\":\"Coin\",\"color\":\"green\",\"italic\":false}",
+                "minecraft:lore": ["{\"text\":\"Worth $10\",\"color\":\"gray\",\"italic\":false}"]
+              }
+            }
+          ]
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:gold_nugget",
+          "weight": 20,
+          "functions": [
+            {
+              "function": "minecraft:set_components",
+              "components": {
+                "minecraft:custom_model_data": 719100,
+                "minecraft:custom_name": "{\"text\":\"Coin\",\"color\":\"blue\",\"italic\":false}",
+                "minecraft:lore": ["{\"text\":\"Worth $100\",\"color\":\"gray\",\"italic\":false}"]
+              }
+            }
+          ]
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:gold_nugget",
+          "weight": 5,
+          "functions": [
+            {
+              "function": "minecraft:set_components",
+              "components": {
+                "minecraft:custom_model_data": 719999,
+                "minecraft:custom_name": "{\"text\":\"Coin\",\"color\":\"light_purple\",\"italic\":false}",
+                "minecraft:lore": ["{\"text\":\"Worth $1,000\",\"color\":\"gray\",\"italic\":false}"]
+              }
+            }
+          ]
+        },
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:gold_nugget",
+          "weight": 1,
+          "functions": [
+            {
+              "function": "minecraft:set_components",
+              "components": {
+                "minecraft:custom_model_data": 710000,
+                "minecraft:custom_name": "{\"text\":\"Coin\",\"color\":\"gold\",\"italic\":false}",
+                "minecraft:lore": ["{\"text\":\"Worth $10,000\",\"color\":\"gray\",\"italic\":false}"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

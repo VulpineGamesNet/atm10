@@ -17,7 +17,7 @@ const BYPASS_KEY = "bypass"
 
 // Coin denominations for withdraw/deposit (ordered largest to smallest for greedy algorithm)
 // Uses vanilla paper items with CustomModelData NBT for server-side only implementation
-const COIN_BASE_ITEM = 'minecraft:sunflower'
+const COIN_BASE_ITEM = 'minecraft:gold_nugget'
 const COIN_DENOMINATIONS = [
   { value: 10000, customModelData: 710000, name: 'Coin', lore: 'Worth $10,000', color: 'gold' },
   { value: 1000,  customModelData: 719999, name: 'Coin', lore: 'Worth $1,000',  color: 'light_purple' },
@@ -1249,6 +1249,69 @@ BlockEvents.broken(event => {
   }
 })
 
+// Helper function to deposit coins on right-click
+function depositCoinOnClick(player, item, depositAll) {
+  let server = player.getServer()
+  let pUuid = player.getStringUuid()
+  let denom = getCoinDenomFromStack(item)
+
+  if (!denom) return false
+
+  ensureDataLoaded(server)
+
+  let countToDeposit = depositAll ? item.getCount() : 1
+  let valueToDeposit = denom.value * countToDeposit
+
+  // Add to balance
+  addBalance(server, pUuid, valueToDeposit)
+
+  // Remove coins from hand
+  item.shrink(countToDeposit)
+
+  // Record history
+  addHistoryEntry(server, pUuid, "deposit", valueToDeposit, null, countToDeposit + "x $" + denom.value + " coin" + (countToDeposit > 1 ? "s" : ""))
+
+  // Show message
+  let newBalance = getBalance(server, pUuid)
+  player.sendSystemMessage(
+    Component.empty()
+      .append(Component.gold("Deposited "))
+      .append(Component.green(formatBalance(valueToDeposit)))
+      .append(Component.gray(" (" + countToDeposit + "x $" + denom.value + ")"))
+      .append(Component.gold(" | Balance: "))
+      .append(Component.green(formatBalance(newBalance)))
+  )
+
+  return true
+}
+
+// Coin right-click on block - prevent default interaction, let ItemEvents handle deposit
+BlockEvents.rightClicked(event => {
+  let item = event.getItem()
+  if (!item || item.isEmpty()) return
+
+  let denom = getCoinDenomFromStack(item)
+  if (!denom) return
+
+  // Cancel block interaction (prevent any default behavior)
+  event.cancel()
+})
+
+// Coin right-click on air - deposit coin
+ItemEvents.rightClicked(event => {
+  let player = event.getEntity()
+  let item = event.getItem()
+
+  let denom = getCoinDenomFromStack(item)
+  if (!denom) return
+
+  let depositAll = player.isCrouching()
+
+  depositCoinOnClick(player, item, depositAll)
+
+  event.cancel()
+})
+
 // Main shop interaction handler
 BlockEvents.rightClicked(event => {
   if (!isWallSign(event.block)) return
@@ -1612,7 +1675,6 @@ ServerEvents.commandRegistry(event => {
         src.sendSystemMessage(Component.yellow("/wallet withdraw <amount> <denom>").append(Component.gray(" - Withdraw as specific coin (1/10/100/1000)")))
         src.sendSystemMessage(Component.yellow("/wallet deposit").append(Component.gray(" - Deposit all coins")))
         src.sendSystemMessage(Component.yellow("/wallet deposit <amount>").append(Component.gray(" - Deposit specific value")))
-        src.sendSystemMessage(Component.yellow("/wallet top").append(Component.gray(" - Richest players leaderboard")))
         src.sendSystemMessage(Component.yellow("/wallet history").append(Component.gray(" - Transaction history")))
         src.sendSystemMessage(Component.yellow("/wallet shop help").append(Component.gray(" - Shop creation guide")))
         if (src.hasPermission(2)) {
@@ -1659,8 +1721,7 @@ ServerEvents.commandRegistry(event => {
           src.sendSystemMessage(Component.yellow("/wallet deposit").append(Component.gray(" - Deposit all coins in inventory")))
           src.sendSystemMessage(Component.yellow("/wallet deposit <amount>").append(Component.gray(" - Deposit specific value from coins")))
           src.sendSystemMessage(Component.gold("--- Other ---"))
-          src.sendSystemMessage(Component.yellow("/wallet top").append(Component.gray(" - Richest players leaderboard")))
-          src.sendSystemMessage(Component.yellow("/wallet history").append(Component.gray(" - Transaction history")))
+            src.sendSystemMessage(Component.yellow("/wallet history").append(Component.gray(" - Transaction history")))
           src.sendSystemMessage(Component.yellow("/wallet shop help").append(Component.gray(" - Shop creation guide")))
           if (src.hasPermission(2)) {
             src.sendSystemMessage(Component.red("/wallet admin").append(Component.gray(" - Admin commands")))
@@ -1779,67 +1840,6 @@ ServerEvents.commandRegistry(event => {
         )
       )
 
-      // /wallet top - Richest players leaderboard
-      .then(Commands.literal("top")
-        .executes(ctx => {
-          let srv = ctx.getSource().getServer()
-          ensureDataLoaded(srv)
-
-          // Get all balances and sort by amount
-          let entries = []
-          for (let uuid in balancesCache) {
-            entries.push({ uuid: uuid, balance: balancesCache[uuid] })
-          }
-          entries.sort(function(a, b) { return b.balance - a.balance })
-
-          // Take top 10
-          let top = entries.slice(0, 10)
-
-          ctx.getSource().sendSystemMessage(Component.gold("=== Richest Players ==="))
-
-          if (top.length === 0) {
-            ctx.getSource().sendSystemMessage(Component.gray("No players with balances yet"))
-            return 1
-          }
-
-          for (let i = 0; i < top.length; i++) {
-            let entry = top[i]
-            let rank = i + 1
-            let playerName = "Unknown"
-
-            // Try to get player name from server
-            let onlinePlayer = srv.getPlayer(entry.uuid)
-            if (onlinePlayer) {
-              playerName = onlinePlayer.getName().getString()
-            } else {
-              // Try to get from game profile cache
-              try {
-                let profileCache = srv.getProfileCache()
-                if (profileCache) {
-                  let optProfile = profileCache.get(Java.loadClass('java.util.UUID').fromString(entry.uuid))
-                  if (optProfile && optProfile.isPresent()) {
-                    playerName = optProfile.get().getName()
-                  }
-                }
-              } catch(e) {
-                // Use UUID as fallback
-                playerName = entry.uuid.substring(0, 8) + "..."
-              }
-            }
-
-            let rankColor = rank === 1 ? Component.gold : (rank === 2 ? Component.gray : (rank === 3 ? Component.darkRed : Component.white))
-            ctx.getSource().sendSystemMessage(
-              Component.empty()
-                .append(rankColor("#" + rank + " "))
-                .append(Component.yellow(playerName))
-                .append(Component.gray(" - "))
-                .append(Component.green(formatBalance(entry.balance)))
-            )
-          }
-
-          return 1
-        })
-      )
 
       // /wallet history - Show transaction history
       .then(Commands.literal("history")
@@ -2068,47 +2068,7 @@ ServerEvents.commandRegistry(event => {
           let srv = ctx.getSource().getServer()
           let pUuid = player.getStringUuid()
 
-          // Debug: Log inventory contents to find coins
-          let inv = player.getInventory()
-          let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 36)
-          console.info("[KubeShop Debug] Scanning " + slots + " slots for coins (looking for " + COIN_BASE_ITEM + ")")
-          for (let i = 0; i < slots; i++) {
-            let stack = inv.getStackInSlot ? inv.getStackInSlot(i) : inv.getItem(i)
-            if (stack && !stack.isEmpty()) {
-              let itemId = stack.getId()
-              if (itemId === COIN_BASE_ITEM || itemId.indexOf('sunflower') !== -1) {
-                console.info("[KubeShop Debug] Slot " + i + ": " + itemId + " x" + stack.getCount())
-                // Try to get custom model data using various methods
-                try {
-                  let cmd1 = stack.get('minecraft:custom_model_data')
-                  console.info("[KubeShop Debug]   get('minecraft:custom_model_data'): " + cmd1 + " (type: " + typeof cmd1 + ")")
-                } catch(e) {
-                  console.info("[KubeShop Debug]   get('minecraft:custom_model_data') error: " + e)
-                }
-                try {
-                  let cmd2 = stack.get('custom_model_data')
-                  console.info("[KubeShop Debug]   get('custom_model_data'): " + cmd2 + " (type: " + typeof cmd2 + ")")
-                } catch(e) {
-                  console.info("[KubeShop Debug]   get('custom_model_data') error: " + e)
-                }
-                try {
-                  let nbt = stack.getNbt()
-                  console.info("[KubeShop Debug]   getNbt(): " + nbt)
-                } catch(e) {
-                  console.info("[KubeShop Debug]   getNbt() error: " + e)
-                }
-                try {
-                  // Log the full item string representation
-                  console.info("[KubeShop Debug]   toString(): " + stack.toString())
-                } catch(e) {
-                  console.info("[KubeShop Debug]   toString() error: " + e)
-                }
-              }
-            }
-          }
-
           let coinInfo = countPlayerCoins(player)
-          console.info("[KubeShop Debug] countPlayerCoins result: total=" + coinInfo.total + ", breakdown=" + JSON.stringify(coinInfo.breakdown))
           if (coinInfo.total <= 0) {
             ctx.getSource().sendFailure(Component.red("You don't have any coins to deposit"))
             return 0
