@@ -5,18 +5,17 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Run as pterodactyl user to access Pterodactyl volumes
+    # Check UID/GID with: id pterodactyl (usually 988:988)
+    user: "997:988"
     volumes:
-      # Mount server stats directory from Minecraft server
-      # Adjust the path to match your Minecraft server location
-      - /path/to/minecraft/kubejs/server_data:/app/server_data:ro
-    # For connecting to Minecraft RCON on host machine
-    # Option 1: Use host network mode (simplest for same-machine setup)
-    # network_mode: host
-    #
-    # Option 2: Use extra_hosts to access host (Docker Desktop on Mac/Windows)
+      # Mount server stats directory from Pterodactyl Minecraft server
+      # Replace <server-uuid> with your actual server UUID
+      # Find it with: sudo ls /var/lib/pterodactyl/volumes/
+      - /var/lib/pterodactyl/volumes/<server-uuid>/kubejs/server_data:/app/server_data:ro
+    # For connecting to Minecraft RCON
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Note: Set RCON_HOST in .env to:
-    # - "localhost" if using network_mode: host
-    # - "host.docker.internal" if using extra_hosts
+    # - "host.docker.internal" for containers on same host
     # - The actual IP/hostname if running on different machine

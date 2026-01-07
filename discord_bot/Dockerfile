@@ -15,10 +15,6 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY bot.py config.py ./
 
-# Create non-root user for security
-RUN useradd -m -r botuser && chown -R botuser:botuser /app
-USER botuser
-
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
