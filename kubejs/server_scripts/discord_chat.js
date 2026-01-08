@@ -110,13 +110,16 @@ function getPlayerCount(server) {
 }
 
 function getPlayerList(server) {
-  let names = []
+  let players = []
   try {
     server.getPlayers().forEach(function (p) {
-      names.push(p.getName().getString())
+      players.push({
+        name: String(p.getName().getString()),
+        uuid: String(p.getStringUuid())
+      })
     })
   } catch (e) {}
-  return names
+  return players
 }
 
 // Build JSON response for /getstats command
@@ -126,19 +129,28 @@ function buildStatsJson(server) {
   let players = getPlayerList(server)
   let uptime = getUptime()
 
-  // Build players array JSON
+  // Build players array JSON (objects with name and uuid)
   let playersJson = '['
   for (let i = 0; i < players.length; i++) {
     if (i > 0) playersJson += ','
-    playersJson += '"' + escapeJson(players[i]) + '"'
+    playersJson += '{"name":"' + escapeJson(players[i].name) + '","uuid":"' + escapeJson(players[i].uuid) + '"}'
   }
   playersJson += ']'
+
+  // Debug: log pending messages count
+  if (pendingMessages.length > 0) {
+    console.info("[DiscordChat] Building JSON with " + pendingMessages.length + " messages")
+  }
 
   // Build messages array JSON
   let messagesJson = '['
   for (let i = 0; i < pendingMessages.length; i++) {
     if (i > 0) messagesJson += ','
     let msg = pendingMessages[i]
+
+    // Debug: log each message being serialized
+    console.info("[DiscordChat] Serializing msg: type=" + msg.type + ", player=" + msg.player + ", uuid=" + msg.uuid)
+
     messagesJson += '{"type":"' + escapeJson(msg.type) + '"'
     messagesJson += ',"player":"' + escapeJson(msg.player) + '"'
     messagesJson += ',"uuid":"' + escapeJson(msg.uuid) + '"'
@@ -168,10 +180,10 @@ function buildStatsJson(server) {
 // Queue a message for Python bot to send to Discord
 function queueMessage(type, playerName, playerUuid, message) {
   pendingMessages.push({
-    type: type,
-    player: playerName,
-    uuid: playerUuid,
-    message: message || null
+    type: String(type),
+    player: String(playerName),
+    uuid: String(playerUuid),
+    message: message ? String(message) : null
   })
 }
 
@@ -187,35 +199,52 @@ ServerEvents.loaded(event => {
 
 // Player chat messages
 PlayerEvents.chat(event => {
-  if (!DISCORD_CONFIG.enableChatSync) return
+  console.info("[DiscordChat] Chat event fired!")
+
+  if (!DISCORD_CONFIG.enableChatSync) {
+    console.info("[DiscordChat] Chat sync disabled, skipping")
+    return
+  }
 
   let player = event.player
+  console.info("[DiscordChat] Player: " + player)
+
+  // Try to get message - in KubeJS 1.21, it might be event.message or event.getMessage()
   let message = event.message
+  console.info("[DiscordChat] Message object: " + message)
+  console.info("[DiscordChat] Message type: " + (typeof message))
 
   // Get the raw message string
   let messageStr = ""
   try {
     if (typeof message === 'string') {
       messageStr = message
-    } else if (message.getString) {
+    } else if (message && message.getString) {
       messageStr = message.getString()
-    } else if (message.getContents) {
+    } else if (message && message.getContents) {
       messageStr = message.getContents().toString()
-    } else {
-      messageStr = message.toString()
+    } else if (message) {
+      messageStr = String(message)
     }
   } catch (e) {
-    messageStr = message.toString()
+    console.error("[DiscordChat] Error getting message: " + e)
+    if (message) messageStr = String(message)
   }
+
+  console.info("[DiscordChat] Message string: " + messageStr)
 
   messageStr = stripColorCodes(messageStr)
   messageStr = truncateMessage(messageStr, DISCORD_CONFIG.maxMessageLength)
 
-  if (!messageStr || messageStr.length === 0) return
+  if (!messageStr || messageStr.length === 0) {
+    console.info("[DiscordChat] Empty message, skipping")
+    return
+  }
 
   let playerName = player.getName().getString()
   let playerUuid = player.getStringUuid()
 
+  console.info("[DiscordChat] Queueing message from " + playerName + ": " + messageStr)
   queueMessage("chat", playerName, playerUuid, messageStr)
 })
 
