@@ -19,6 +19,7 @@ Thumbs.db
 
 # Build artifacts
 *.zip
+!resourcepacks/*.zip
 
 # Discord bot
 discord_bot/.env
