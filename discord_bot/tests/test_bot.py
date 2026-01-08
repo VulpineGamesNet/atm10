@@ -467,9 +467,8 @@ class TestMessageProcessing:
 
         mock_embed.assert_called_once()
         args = mock_embed.call_args[0]
-        assert "logged in" in args[0]
-        assert "Steve" in args[0]
-        assert args[3] == "Steve"  # author_name
+        assert args[0] is None  # no description
+        assert "Steve logged in" in args[3]  # author_name
 
     @pytest.mark.asyncio
     async def test_process_leave_message(self, bridge):
@@ -481,9 +480,8 @@ class TestMessageProcessing:
 
         mock_embed.assert_called_once()
         args = mock_embed.call_args[0]
-        assert "logged out" in args[0]
-        assert "Steve" in args[0]
-        assert args[3] == "Steve"  # author_name
+        assert args[0] is None  # no description
+        assert "Steve logged out" in args[3]  # author_name
 
 
 class TestDiscordMCBot:

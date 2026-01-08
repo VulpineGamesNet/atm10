@@ -195,7 +195,9 @@ class MinecraftBridge(commands.Cog):
         if not self.http_session:
             return False
 
-        embed = {"description": description, "color": color}
+        embed = {"color": color}
+        if description:
+            embed["description"] = description
         if icon_url and author_name:
             embed["author"] = {"name": author_name, "icon_url": icon_url}
 
@@ -235,20 +237,20 @@ class MinecraftBridge(commands.Cog):
             elif msg_type == "join":
                 icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
                 await self.send_webhook_embed(
-                    f":green_circle: **{player}** logged in",
+                    None,
                     self.EMBED_COLOR_GREEN,
                     icon_url,
-                    player,
+                    f"{player} logged in",
                 )
                 logger.info(f"Sent join notification for {player}")
 
             elif msg_type == "leave":
                 icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
                 await self.send_webhook_embed(
-                    f":red_circle: **{player}** logged out",
+                    None,
                     self.EMBED_COLOR_RED,
                     icon_url,
-                    player,
+                    f"{player} logged out",
                 )
                 logger.info(f"Sent leave notification for {player}")
 
