@@ -20,6 +20,7 @@ from typing import Optional
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import Config, load_config
@@ -441,6 +442,84 @@ class MinecraftBridge(commands.Cog):
     async def before_update_topic(self) -> None:
         await self.bot.wait_until_ready()
 
+    @app_commands.command(name="players", description="Show online players on the Minecraft server")
+    async def players_command(self, interaction: discord.Interaction) -> None:
+        """Show online players with avatars in an embed."""
+        if not self.last_stats:
+            embed = discord.Embed(
+                description="Unable to fetch server data. Server may be offline.",
+                color=self.EMBED_COLOR_ORANGE,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if not self.server_online:
+            embed = discord.Embed(
+                description="Server is currently offline or restarting.",
+                color=self.EMBED_COLOR_ORANGE,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        players = self.last_stats.get("players", [])
+        player_count = self.last_stats.get("playerCount", 0)
+        server_name = self.config.minecraft.server_name
+        tps = self.last_stats.get("tps", 20.0)
+        uptime = self.last_stats.get("uptime", "0h 0m")
+
+        # Build embed
+        embed = discord.Embed(
+            title=f"Players Online ({player_count})",
+            color=self.EMBED_COLOR_GREEN if player_count > 0 else self.EMBED_COLOR_BLUE,
+        )
+        embed.set_author(name=server_name, icon_url=self.SERVER_ICON_URL)
+        embed.set_footer(text=f"TPS: {tps:.2f} | Uptime: {uptime}")
+
+        if player_count == 0:
+            embed.description = "No players online"
+        else:
+            # Build player list with avatars
+            # Players now contain {name, uuid} objects
+            player_lines = []
+            for player in players:
+                if isinstance(player, dict):
+                    name = player.get("name", "Unknown")
+                    uuid = player.get("uuid", "")
+                else:
+                    # Fallback for old format (just string names)
+                    name = str(player)
+                    uuid = ""
+                player_lines.append(f"**{name}**")
+
+            embed.description = "\n".join(player_lines)
+
+            # Set thumbnail to first player's avatar if available
+            if players:
+                first_player = players[0]
+                if isinstance(first_player, dict) and first_player.get("uuid"):
+                    embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{first_player['uuid']}/128")
+
+            # Add player avatars as a field if multiple players
+            if len(players) > 1:
+                avatar_links = []
+                for player in players[:10]:  # Limit to 10 to avoid embed limits
+                    if isinstance(player, dict):
+                        name = player.get("name", "Unknown")
+                        uuid = player.get("uuid", "")
+                        if uuid:
+                            avatar_links.append(f"[{name}](https://namemc.com/profile/{uuid})")
+                        else:
+                            avatar_links.append(name)
+                    else:
+                        avatar_links.append(str(player))
+
+                if len(players) > 10:
+                    avatar_links.append(f"*...and {len(players) - 10} more*")
+
+                embed.add_field(name="Player Profiles", value=" • ".join(avatar_links), inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
 
 class DiscordMCBot(commands.Bot):
     """Main bot class."""
@@ -462,6 +541,19 @@ class DiscordMCBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Called when bot is starting up."""
         await self.add_cog(MinecraftBridge(self, self.config))
+
+        # Sync slash commands
+        if self.config.discord.guild_id:
+            # Sync to specific guild for instant updates during development
+            guild = discord.Object(id=self.config.discord.guild_id)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info(f"Synced commands to guild {self.config.discord.guild_id}")
+        else:
+            # Global sync (can take up to an hour to propagate)
+            await self.tree.sync()
+            logger.info("Synced commands globally")
+
         logger.info("Bot setup complete")
 
     async def on_ready(self) -> None:
