@@ -226,6 +226,184 @@ class TestRCON:
         assert result is None
 
 
+class TestPersistentRCON:
+    """Tests for persistent RCON connection functionality."""
+
+    def test_rcon_initial_state(self, bridge):
+        """Test that RCON starts disconnected."""
+        assert bridge._rcon_socket is None
+        assert bridge._rcon_connected is False
+
+    def test_rcon_disconnect_no_socket(self, bridge):
+        """Test disconnect when no socket exists."""
+        bridge._rcon_disconnect()
+        assert bridge._rcon_socket is None
+        assert bridge._rcon_connected is False
+
+    def test_rcon_disconnect_with_socket(self, bridge):
+        """Test disconnect cleans up socket."""
+        mock_socket = MagicMock()
+        bridge._rcon_socket = mock_socket
+        bridge._rcon_connected = True
+
+        bridge._rcon_disconnect()
+
+        mock_socket.close.assert_called_once()
+        assert bridge._rcon_socket is None
+        assert bridge._rcon_connected is False
+
+    def test_rcon_disconnect_socket_error(self, bridge):
+        """Test disconnect handles socket close error gracefully."""
+        mock_socket = MagicMock()
+        mock_socket.close.side_effect = OSError("Socket error")
+        bridge._rcon_socket = mock_socket
+        bridge._rcon_connected = True
+
+        bridge._rcon_disconnect()
+
+        assert bridge._rcon_socket is None
+        assert bridge._rcon_connected is False
+
+    def test_rcon_connect_success(self, bridge):
+        """Test successful RCON connection."""
+        mock_socket = MagicMock()
+
+        with patch("socket.socket", return_value=mock_socket):
+            with patch.object(bridge, "_rcon_recv_packet", return_value=(1, 0, "")):
+                result = bridge._rcon_connect()
+
+        assert result is True
+        assert bridge._rcon_connected is True
+        assert bridge._rcon_socket == mock_socket
+        mock_socket.connect.assert_called_once()
+
+    def test_rcon_connect_auth_failure(self, bridge):
+        """Test RCON connection with authentication failure."""
+        mock_socket = MagicMock()
+
+        with patch("socket.socket", return_value=mock_socket):
+            with patch.object(bridge, "_rcon_recv_packet", return_value=(-1, 0, "")):
+                result = bridge._rcon_connect()
+
+        assert result is False
+        assert bridge._rcon_connected is False
+        mock_socket.close.assert_called()
+
+    def test_rcon_connect_refused(self, bridge):
+        """Test RCON connection refused."""
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = ConnectionRefusedError()
+
+        with patch("socket.socket", return_value=mock_socket):
+            result = bridge._rcon_connect()
+
+        assert result is False
+        assert bridge._rcon_connected is False
+
+    def test_rcon_connect_timeout(self, bridge):
+        """Test RCON connection timeout."""
+        import socket as socket_module
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = socket_module.timeout()
+
+        with patch("socket.socket", return_value=mock_socket):
+            result = bridge._rcon_connect()
+
+        assert result is False
+        assert bridge._rcon_connected is False
+
+    def test_rcon_connect_os_error(self, bridge):
+        """Test RCON connection with OS error."""
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = OSError("Network unreachable")
+
+        with patch("socket.socket", return_value=mock_socket):
+            result = bridge._rcon_connect()
+
+        assert result is False
+        assert bridge._rcon_connected is False
+
+    def test_rcon_sync_connects_if_disconnected(self, bridge):
+        """Test that _rcon_sync connects if not connected."""
+        mock_socket = MagicMock()
+
+        with patch.object(bridge, "_rcon_connect", return_value=True) as mock_connect:
+            bridge._rcon_socket = mock_socket
+            bridge._rcon_connected = True
+            with patch.object(bridge, "_rcon_recv_packet", return_value=(2, 0, "response")):
+                result = bridge._rcon_sync("test")
+
+        assert result == "response"
+
+    def test_rcon_sync_fails_if_cannot_connect(self, bridge):
+        """Test that _rcon_sync raises if connection fails."""
+        with patch.object(bridge, "_rcon_connect", return_value=False):
+            with pytest.raises(ConnectionError, match="Not connected"):
+                bridge._rcon_sync("test")
+
+    def test_rcon_sync_disconnects_on_error(self, bridge):
+        """Test that _rcon_sync disconnects on socket error."""
+        import socket as socket_module
+        mock_socket = MagicMock()
+        bridge._rcon_socket = mock_socket
+        bridge._rcon_connected = True
+
+        with patch.object(bridge, "_rcon_send_packet", side_effect=socket_module.error("Connection reset")):
+            with pytest.raises(ConnectionError):
+                bridge._rcon_sync("test")
+
+        assert bridge._rcon_connected is False
+        assert bridge._rcon_socket is None
+
+    def test_rcon_sync_disconnects_on_broken_pipe(self, bridge):
+        """Test that _rcon_sync disconnects on BrokenPipeError."""
+        mock_socket = MagicMock()
+        bridge._rcon_socket = mock_socket
+        bridge._rcon_connected = True
+
+        with patch.object(bridge, "_rcon_send_packet", side_effect=BrokenPipeError()):
+            with pytest.raises(ConnectionError):
+                bridge._rcon_sync("test")
+
+        assert bridge._rcon_connected is False
+        assert bridge._rcon_socket is None
+
+    def test_rcon_sync_auto_reconnect_on_next_call(self, bridge):
+        """Test that after disconnect, next call attempts reconnect."""
+        bridge._rcon_connected = False
+        bridge._rcon_socket = None
+
+        with patch.object(bridge, "_rcon_connect", return_value=False) as mock_connect:
+            with pytest.raises(ConnectionError):
+                bridge._rcon_sync("test")
+
+        mock_connect.assert_called_once()
+
+    def test_cog_unload_disconnects_rcon(self, bridge):
+        """Test that cog_unload disconnects RCON."""
+        mock_socket = MagicMock()
+        bridge._rcon_socket = mock_socket
+        bridge._rcon_connected = True
+        bridge.http_session = MagicMock()
+        bridge.http_session.close = AsyncMock()
+        bridge.poll_server_stats = MagicMock()
+        bridge.update_channel_topic = MagicMock()
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(bridge.cog_unload())
+
+        assert bridge._rcon_connected is False
+
+    def test_polling_uses_config_interval(self, bridge):
+        """Test that polling interval is set from config."""
+        bridge.config.settings.stats_check_interval = 10
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(bridge.before_poll_stats())
+
+        assert bridge.poll_server_stats.seconds == 10
+
+
 class TestMessageHandler:
     """Tests for Discord message handling."""
 

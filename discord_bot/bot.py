@@ -54,6 +54,9 @@ class MinecraftBridge(commands.Cog):
 
     WEBHOOK_NAME = "Minecraft Bridge"
 
+    RCON_SERVERDATA_AUTH = 3
+    RCON_SERVERDATA_EXECCOMMAND = 2
+
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
         self.config = config
@@ -66,6 +69,9 @@ class MinecraftBridge(commands.Cog):
         # Debounce state
         self.last_status_notification: float = 0
         self.consecutive_offline_checks: int = 0
+        # Persistent RCON connection state
+        self._rcon_socket: Optional[socket.socket] = None
+        self._rcon_connected: bool = False
 
     async def cog_load(self) -> None:
         """Called when cog is loaded."""
@@ -80,6 +86,7 @@ class MinecraftBridge(commands.Cog):
         self.update_channel_topic.cancel()
         if self.http_session:
             await self.http_session.close()
+        self._rcon_disconnect()
 
     async def setup_webhook(self) -> None:
         """Get or create a webhook for the configured channel."""
@@ -114,61 +121,99 @@ class MinecraftBridge(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to setup webhook: {e}")
 
-    def _rcon_sync(self, command: str) -> str:
-        """Synchronous RCON command execution using raw sockets."""
-        SERVERDATA_AUTH = 3
-        SERVERDATA_EXECCOMMAND = 2
+    def _rcon_send_packet(
+        self, sock: socket.socket, packet_id: int, packet_type: int, payload: str
+    ) -> None:
+        """Send an RCON packet."""
+        payload_bytes = payload.encode("utf-8") + b"\x00\x00"
+        packet = struct.pack("<ii", packet_id, packet_type) + payload_bytes
+        packet = struct.pack("<i", len(packet)) + packet
+        sock.sendall(packet)
 
-        def send_packet(
-            sock: socket.socket, packet_id: int, packet_type: int, payload: str
-        ) -> None:
-            """Send an RCON packet."""
-            payload_bytes = payload.encode("utf-8") + b"\x00\x00"
-            packet = struct.pack("<ii", packet_id, packet_type) + payload_bytes
-            packet = struct.pack("<i", len(packet)) + packet
-            sock.sendall(packet)
+    def _rcon_recv_packet(self, sock: socket.socket) -> tuple[int, int, str]:
+        """Receive an RCON packet."""
+        length_data = sock.recv(4)
+        if len(length_data) < 4:
+            raise ConnectionError("Failed to read packet length")
+        length = struct.unpack("<i", length_data)[0]
 
-        def recv_packet(sock: socket.socket) -> tuple[int, int, str]:
-            """Receive an RCON packet."""
-            length_data = sock.recv(4)
-            if len(length_data) < 4:
-                raise ConnectionError("Failed to read packet length")
-            length = struct.unpack("<i", length_data)[0]
+        data = b""
+        while len(data) < length:
+            chunk = sock.recv(length - len(data))
+            if not chunk:
+                raise ConnectionError("Connection closed by server")
+            data += chunk
 
-            data = b""
-            while len(data) < length:
-                chunk = sock.recv(length - len(data))
-                if not chunk:
-                    raise ConnectionError("Connection closed")
-                data += chunk
+        packet_id = struct.unpack("<i", data[0:4])[0]
+        packet_type = struct.unpack("<i", data[4:8])[0]
+        payload = data[8:-2].decode("utf-8")
 
-            packet_id = struct.unpack("<i", data[0:4])[0]
-            packet_type = struct.unpack("<i", data[4:8])[0]
-            payload = data[8:-2].decode("utf-8")
+        return packet_id, packet_type, payload
 
-            return packet_id, packet_type, payload
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
+    def _rcon_connect(self) -> bool:
+        """Establish persistent RCON connection with authentication."""
+        self._rcon_disconnect()
 
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
             sock.connect(
                 (self.config.minecraft.rcon_host, self.config.minecraft.rcon_port)
             )
 
-            send_packet(sock, 1, SERVERDATA_AUTH, self.config.minecraft.rcon_password)
-            packet_id, packet_type, _ = recv_packet(sock)
+            self._rcon_send_packet(
+                sock, 1, self.RCON_SERVERDATA_AUTH, self.config.minecraft.rcon_password
+            )
+            packet_id, _, _ = self._rcon_recv_packet(sock)
 
             if packet_id == -1:
-                raise ConnectionError("RCON authentication failed")
+                logger.error("RCON authentication failed - check password")
+                sock.close()
+                return False
 
-            send_packet(sock, 2, SERVERDATA_EXECCOMMAND, command)
-            _, _, response = recv_packet(sock)
+            sock.settimeout(30.0)
+            self._rcon_socket = sock
+            self._rcon_connected = True
+            logger.info("RCON connection established")
+            return True
 
+        except ConnectionRefusedError:
+            logger.debug("RCON connection refused - server may be starting")
+            return False
+        except socket.timeout:
+            logger.warning("RCON connection timed out")
+            return False
+        except OSError as e:
+            logger.debug(f"RCON connection error: {e}")
+            return False
+
+    def _rcon_disconnect(self) -> None:
+        """Close RCON connection cleanly."""
+        if self._rcon_socket:
+            try:
+                self._rcon_socket.close()
+            except OSError:
+                pass
+            self._rcon_socket = None
+        self._rcon_connected = False
+
+    def _rcon_sync(self, command: str) -> str:
+        """Send command using persistent RCON connection with auto-reconnect."""
+        if not self._rcon_connected:
+            if not self._rcon_connect():
+                raise ConnectionError("Not connected to RCON")
+
+        try:
+            self._rcon_send_packet(
+                self._rcon_socket, 2, self.RCON_SERVERDATA_EXECCOMMAND, command
+            )
+            _, _, response = self._rcon_recv_packet(self._rcon_socket)
             return response
 
-        finally:
-            sock.close()
+        except (socket.timeout, socket.error, ConnectionError, BrokenPipeError, OSError) as e:
+            logger.warning(f"RCON command failed, connection lost: {e}")
+            self._rcon_disconnect()
+            raise ConnectionError(f"RCON disconnected: {e}")
 
     async def send_rcon_command(self, command: str) -> Optional[str]:
         """Send a command to Minecraft server via RCON."""
@@ -407,7 +452,7 @@ class MinecraftBridge(commands.Cog):
                 )
                 logger.info(f"Sent leave notification for {player}")
 
-    @tasks.loop(seconds=2)
+    @tasks.loop(seconds=5)
     async def poll_server_stats(self) -> None:
         """Poll server stats via RCON and process messages."""
         stats = await self.get_stats_via_rcon()
@@ -460,6 +505,7 @@ class MinecraftBridge(commands.Cog):
 
     @poll_server_stats.before_loop
     async def before_poll_stats(self) -> None:
+        self.poll_server_stats.change_interval(seconds=self.config.settings.stats_check_interval)
         await self.bot.wait_until_ready()
 
     def sanitize_discord_message(self, content: str) -> str:
