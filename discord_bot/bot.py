@@ -557,12 +557,13 @@ class MinecraftBridge(commands.Cog):
                     uuid = player.get("uuid", "")
                     if not first_uuid and uuid:
                         first_uuid = uuid
+                    player_lines.append(f"• **{name}**")
                 else:
                     # Fallback for old format (just string names)
-                    name = str(player)
-                player_lines.append(f"• **{name}**")
+                    player_lines.append(f"• **{player}**")
 
             embed.description = "\n".join(player_lines)
+            logger.info(f"/players: first_uuid={first_uuid}, players={players}")
 
             # Set thumbnail to first player's avatar
             if first_uuid:
