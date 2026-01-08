@@ -1,10 +1,12 @@
 """Tests for the Discord bot functionality."""
 
+import io
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
+from PIL import Image
 
 from bot import DiscordMCBot, MinecraftBridge
 from config import Config, DiscordConfig, MinecraftConfig, Settings
@@ -504,3 +506,258 @@ class TestDiscordMCBot:
 
         assert bot.intents.message_content is True
         assert bot.intents.guilds is True
+
+
+class TestPlayerAvatarsImage:
+    """Tests for player avatars image generation."""
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_empty_list(self, bridge):
+        """Test that empty player list returns None."""
+        bridge.http_session = MagicMock()
+        result = await bridge.generate_player_avatars_image([])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_no_session(self, bridge):
+        """Test that missing http_session returns None."""
+        bridge.http_session = None
+        result = await bridge.generate_player_avatars_image([{"name": "Test", "uuid": "abc"}])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_no_uuid(self, bridge):
+        """Test that players without UUID are skipped."""
+        bridge.http_session = MagicMock()
+        result = await bridge.generate_player_avatars_image([{"name": "Test"}])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_string_format(self, bridge):
+        """Test that old string format players are skipped."""
+        bridge.http_session = MagicMock()
+        result = await bridge.generate_player_avatars_image(["Player1", "Player2"])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_success(self, bridge):
+        """Test successful avatar image generation."""
+        # Create a test image
+        test_image = Image.new('RGBA', (32, 32), (255, 0, 0, 255))
+        img_buffer = io.BytesIO()
+        test_image.save(img_buffer, format='PNG')
+        img_bytes = img_buffer.getvalue()
+
+        # Mock HTTP session
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.read = AsyncMock(return_value=img_bytes)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()))
+
+        bridge.http_session = mock_session
+
+        players = [
+            {"name": "Player1", "uuid": "uuid-1"},
+            {"name": "Player2", "uuid": "uuid-2"},
+        ]
+
+        result = await bridge.generate_player_avatars_image(players)
+
+        assert result is not None
+        assert isinstance(result, io.BytesIO)
+
+        # Verify the image can be opened
+        result.seek(0)
+        combined_image = Image.open(result)
+        assert combined_image.width == 32 * 2 + 4  # 2 avatars + 1 padding (single row)
+        assert combined_image.height == 32  # single row
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_http_error(self, bridge):
+        """Test handling of HTTP errors during avatar fetch."""
+        mock_response = AsyncMock()
+        mock_response.status = 404
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()))
+
+        bridge.http_session = mock_session
+
+        players = [{"name": "Player1", "uuid": "uuid-1"}]
+        result = await bridge.generate_player_avatars_image(players)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_limits_to_20(self, bridge):
+        """Test that avatar generation is limited to 20 players with 5 per row."""
+        test_image = Image.new('RGBA', (32, 32), (255, 0, 0, 255))
+        img_buffer = io.BytesIO()
+        test_image.save(img_buffer, format='PNG')
+        img_bytes = img_buffer.getvalue()
+
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.read = AsyncMock(return_value=img_bytes)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()))
+
+        bridge.http_session = mock_session
+
+        # Create 25 players
+        players = [{"name": f"Player{i}", "uuid": f"uuid-{i}"} for i in range(25)]
+
+        result = await bridge.generate_player_avatars_image(players)
+
+        assert result is not None
+        result.seek(0)
+        combined_image = Image.open(result)
+        # Should only have 20 avatars in 4 rows of 5
+        # Width: 5 * 32 + 4 * 4 = 176
+        # Height: 4 * 32 + 3 * 4 = 140
+        assert combined_image.width == 5 * 32 + 4 * 4
+        assert combined_image.height == 4 * 32 + 3 * 4
+
+    @pytest.mark.asyncio
+    async def test_generate_avatars_multiple_rows(self, bridge):
+        """Test that 7 players creates 2 rows (5 + 2)."""
+        test_image = Image.new('RGBA', (32, 32), (255, 0, 0, 255))
+        img_buffer = io.BytesIO()
+        test_image.save(img_buffer, format='PNG')
+        img_bytes = img_buffer.getvalue()
+
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.read = AsyncMock(return_value=img_bytes)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()))
+
+        bridge.http_session = mock_session
+
+        players = [{"name": f"Player{i}", "uuid": f"uuid-{i}"} for i in range(7)]
+
+        result = await bridge.generate_player_avatars_image(players)
+
+        assert result is not None
+        result.seek(0)
+        combined_image = Image.open(result)
+        # 7 players = 2 rows (5 + 2), width based on 5 columns
+        assert combined_image.width == 5 * 32 + 4 * 4  # 176
+        assert combined_image.height == 2 * 32 + 1 * 4  # 68
+
+
+class TestPlayersCommand:
+    """Tests for /players slash command."""
+
+    @pytest.mark.asyncio
+    async def test_players_command_no_stats(self, bridge):
+        """Test /players when no stats available."""
+        bridge.last_stats = None
+
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+
+        # Call the underlying callback directly
+        await bridge.players_command.callback(bridge, mock_interaction)
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args.kwargs
+        assert call_kwargs["ephemeral"] is True
+        assert "offline" in call_kwargs["embed"].description.lower()
+
+    @pytest.mark.asyncio
+    async def test_players_command_server_offline(self, bridge):
+        """Test /players when server is offline."""
+        bridge.last_stats = {"tps": 20.0}
+        bridge.server_online = False
+
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+
+        await bridge.players_command.callback(bridge, mock_interaction)
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args.kwargs
+        assert call_kwargs["ephemeral"] is True
+
+    @pytest.mark.asyncio
+    async def test_players_command_no_players(self, bridge):
+        """Test /players when no players online."""
+        bridge.last_stats = {
+            "tps": 20.0,
+            "playerCount": 0,
+            "players": [],
+            "uptime": "1h 0m",
+        }
+        bridge.server_online = True
+
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+
+        await bridge.players_command.callback(bridge, mock_interaction)
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args.kwargs
+        assert "ephemeral" not in call_kwargs or call_kwargs.get("ephemeral") is not True
+        assert "no players" in call_kwargs["embed"].description.lower()
+
+    @pytest.mark.asyncio
+    async def test_players_command_with_players(self, bridge):
+        """Test /players with online players."""
+        bridge.last_stats = {
+            "tps": 19.5,
+            "playerCount": 2,
+            "players": [
+                {"name": "Player1", "uuid": "uuid-1"},
+                {"name": "Player2", "uuid": "uuid-2"},
+            ],
+            "uptime": "2h 30m",
+        }
+        bridge.server_online = True
+
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+
+        # Mock image generation to return None (no image)
+        with patch.object(bridge, "generate_player_avatars_image", new_callable=AsyncMock, return_value=None):
+            await bridge.players_command.callback(bridge, mock_interaction)
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args.kwargs
+        embed = call_kwargs["embed"]
+        assert "Players Online (2)" in embed.title
+        assert "Player1" in embed.description
+        assert "Player2" in embed.description
+
+    @pytest.mark.asyncio
+    async def test_players_command_with_image(self, bridge):
+        """Test /players with avatar image."""
+        bridge.last_stats = {
+            "tps": 20.0,
+            "playerCount": 1,
+            "players": [{"name": "Player1", "uuid": "uuid-1"}],
+            "uptime": "1h 0m",
+        }
+        bridge.server_online = True
+
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+
+        # Mock image generation to return a buffer
+        mock_buffer = io.BytesIO(b"fake image data")
+        with patch.object(bridge, "generate_player_avatars_image", new_callable=AsyncMock, return_value=mock_buffer):
+            await bridge.players_command.callback(bridge, mock_interaction)
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args.kwargs
+        assert "file" in call_kwargs
+        assert call_kwargs["embed"].image.url == "attachment://players.png"

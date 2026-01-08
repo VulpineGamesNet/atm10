@@ -319,12 +319,13 @@ class MinecraftBridge(commands.Cog):
         )
 
     async def generate_player_avatars_image(self, players: list) -> Optional[io.BytesIO]:
-        """Generate a combined image of player avatars."""
+        """Generate a combined image of player avatars (max 5 per row)."""
         if not players or not self.http_session:
             return None
 
         avatar_size = 32
         padding = 4
+        max_per_row = 5
         avatars = []
 
         # Fetch all player avatars
@@ -351,14 +352,21 @@ class MinecraftBridge(commands.Cog):
         if not avatars:
             return None
 
-        # Create combined image (horizontal row)
-        total_width = len(avatars) * avatar_size + (len(avatars) - 1) * padding
-        combined = Image.new('RGBA', (total_width, avatar_size), (0, 0, 0, 0))
+        # Calculate dimensions (max 5 per row, multiple rows if needed)
+        cols = min(len(avatars), max_per_row)
+        rows = (len(avatars) + max_per_row - 1) // max_per_row
 
-        x_offset = 0
-        for avatar in avatars:
-            combined.paste(avatar, (x_offset, 0))
-            x_offset += avatar_size + padding
+        total_width = cols * avatar_size + (cols - 1) * padding
+        total_height = rows * avatar_size + (rows - 1) * padding
+
+        combined = Image.new('RGBA', (total_width, total_height), (0, 0, 0, 0))
+
+        for i, avatar in enumerate(avatars):
+            row = i // max_per_row
+            col = i % max_per_row
+            x = col * (avatar_size + padding)
+            y = row * (avatar_size + padding)
+            combined.paste(avatar, (x, y))
 
         # Save to buffer
         buffer = io.BytesIO()
