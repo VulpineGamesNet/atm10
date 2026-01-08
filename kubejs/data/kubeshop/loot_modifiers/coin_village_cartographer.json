@@ -3,7 +3,7 @@
   "conditions": [
     {
       "condition": "neoforge:loot_table_id",
-      "loot_table_id": "minecraft:chests/village_cartographer"
+      "loot_table_id": "minecraft:chests/village/village_cartographer"
     },
     {
       "condition": "minecraft:random_chance",

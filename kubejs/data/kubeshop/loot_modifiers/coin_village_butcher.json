@@ -3,7 +3,7 @@
   "conditions": [
     {
       "condition": "neoforge:loot_table_id",
-      "loot_table_id": "minecraft:chests/village_butcher"
+      "loot_table_id": "minecraft:chests/village/village_butcher"
     },
     {
       "condition": "minecraft:random_chance",

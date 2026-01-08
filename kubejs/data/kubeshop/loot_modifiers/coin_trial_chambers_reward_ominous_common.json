@@ -3,12 +3,12 @@
   "conditions": [
     {
       "condition": "neoforge:loot_table_id",
-      "loot_table_id": "minecraft:chests/village/village_temple"
+      "loot_table_id": "minecraft:chests/trial_chambers/reward_ominous_common"
     },
     {
       "condition": "minecraft:random_chance",
-      "chance": 0.1
+      "chance": 0.12
     }
   ],
-  "table": "kubeshop:coin_pool_low"
+  "table": "kubeshop:coin_pool_high"
 }
