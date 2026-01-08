@@ -466,8 +466,10 @@ class TestMessageProcessing:
             await bridge.process_messages(messages)
 
         mock_embed.assert_called_once()
-        assert "logged in" in mock_embed.call_args[0][0]
-        assert "Steve" in mock_embed.call_args[0][0]
+        args = mock_embed.call_args[0]
+        assert "logged in" in args[0]
+        assert "Steve" in args[0]
+        assert args[3] == "Steve"  # author_name
 
     @pytest.mark.asyncio
     async def test_process_leave_message(self, bridge):
@@ -478,8 +480,10 @@ class TestMessageProcessing:
             await bridge.process_messages(messages)
 
         mock_embed.assert_called_once()
-        assert "logged out" in mock_embed.call_args[0][0]
-        assert "Steve" in mock_embed.call_args[0][0]
+        args = mock_embed.call_args[0]
+        assert "logged out" in args[0]
+        assert "Steve" in args[0]
+        assert args[3] == "Steve"  # author_name
 
 
 class TestDiscordMCBot:

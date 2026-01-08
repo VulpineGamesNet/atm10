@@ -184,7 +184,8 @@ class MinecraftBridge(commands.Cog):
         self,
         description: str,
         color: int,
-        thumbnail_url: Optional[str] = None,
+        icon_url: Optional[str] = None,
+        author_name: Optional[str] = None,
     ) -> bool:
         """Send an embed via Discord webhook."""
         if not self.config.discord.webhook_url:
@@ -195,8 +196,8 @@ class MinecraftBridge(commands.Cog):
             return False
 
         embed = {"description": description, "color": color}
-        if thumbnail_url:
-            embed["thumbnail"] = {"url": thumbnail_url}
+        if icon_url and author_name:
+            embed["author"] = {"name": author_name, "icon_url": icon_url}
 
         payload = {"embeds": [embed]}
 
@@ -232,20 +233,22 @@ class MinecraftBridge(commands.Cog):
                 logger.info(f"Relayed chat from {player}: {content[:50]}...")
 
             elif msg_type == "join":
-                icon_url = f"https://mc-heads.net/avatar/{uuid}/64"
+                icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
                 await self.send_webhook_embed(
                     f":green_circle: **{player}** logged in",
                     self.EMBED_COLOR_GREEN,
                     icon_url,
+                    player,
                 )
                 logger.info(f"Sent join notification for {player}")
 
             elif msg_type == "leave":
-                icon_url = f"https://mc-heads.net/avatar/{uuid}/64"
+                icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
                 await self.send_webhook_embed(
                     f":red_circle: **{player}** logged out",
                     self.EMBED_COLOR_RED,
                     icon_url,
+                    player,
                 )
                 logger.info(f"Sent leave notification for {player}")
 
