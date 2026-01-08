@@ -624,8 +624,8 @@ class DiscordMCBot(commands.Bot):
                 # Global sync (can take up to an hour to propagate)
                 await self.tree.sync()
                 logger.info("Synced commands globally")
-        except discord.Forbidden:
-            logger.warning("Missing access to sync commands - re-invite bot with applications.commands scope")
+        except discord.Forbidden as e:
+            logger.warning(f"Missing access to sync commands: {e.status} {e.code} - {e.text}")
         except Exception as e:
             logger.error(f"Failed to sync commands: {e}")
 
