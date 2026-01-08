@@ -14,7 +14,6 @@ class DiscordConfig:
     token: str
     channel_id: int
     webhook_url: Optional[str] = None
-    server_webhook_url: Optional[str] = None
     guild_id: Optional[int] = None
 
 
@@ -90,7 +89,6 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
         token=_get_env("DISCORD_TOKEN", required=True),
         channel_id=_get_env_int("DISCORD_CHANNEL_ID", 0),
         webhook_url=_get_env("DISCORD_WEBHOOK_URL"),
-        server_webhook_url=_get_env("DISCORD_SERVER_WEBHOOK_URL"),
         guild_id=_get_env_int("DISCORD_GUILD_ID", 0) or None,
     )
 

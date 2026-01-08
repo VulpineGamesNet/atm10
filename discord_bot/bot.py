@@ -146,8 +146,7 @@ class MinecraftBridge(commands.Cog):
     async def send_webhook_message(
         self,
         content: str,
-        username: Optional[str] = None,
-        avatar_url: Optional[str] = None,
+        player_name: Optional[str] = None,
     ) -> bool:
         """Send a message via Discord webhook."""
         if not self.config.discord.webhook_url:
@@ -157,11 +156,16 @@ class MinecraftBridge(commands.Cog):
         if not self.http_session:
             return False
 
-        payload = {"content": content}
-        if username:
-            payload["username"] = username
-        if avatar_url:
-            payload["avatar_url"] = avatar_url
+        # Format message with player name in bold
+        if player_name:
+            formatted_content = f"**{player_name}**: {content}"
+        else:
+            formatted_content = content
+
+        payload = {
+            "content": formatted_content,
+            "username": self.config.minecraft.server_name,
+        }
 
         try:
             async with self.http_session.post(
@@ -188,7 +192,7 @@ class MinecraftBridge(commands.Cog):
         icon_url: Optional[str] = None,
         author_name: Optional[str] = None,
     ) -> bool:
-        """Send an embed via Discord webhook."""
+        """Send an embed via Discord webhook (for system messages like join/leave/status)."""
         if not self.config.discord.webhook_url:
             logger.debug("Webhook URL not configured")
             return False
@@ -202,7 +206,10 @@ class MinecraftBridge(commands.Cog):
         if icon_url and author_name:
             embed["author"] = {"name": author_name, "icon_url": icon_url}
 
-        payload = {"embeds": [embed]}
+        payload = {
+            "embeds": [embed],
+            "username": self.config.minecraft.server_name,
+        }
 
         try:
             async with self.http_session.post(
@@ -222,54 +229,6 @@ class MinecraftBridge(commands.Cog):
             logger.error(f"Webhook embed error: {e}")
             return False
 
-    async def send_server_webhook_embed(
-        self,
-        description: str,
-        color: int,
-        icon_url: Optional[str] = None,
-        author_name: Optional[str] = None,
-    ) -> bool:
-        """Send an embed via server webhook (for system messages like join/leave/status)."""
-        webhook_url = (
-            self.config.discord.server_webhook_url or self.config.discord.webhook_url
-        )
-        if not webhook_url:
-            logger.debug("No webhook URL configured for server messages")
-            return False
-
-        if not self.http_session:
-            return False
-
-        embed = {"color": color}
-        if description:
-            embed["description"] = description
-        if icon_url and author_name:
-            embed["author"] = {"name": author_name, "icon_url": icon_url}
-
-        payload = {
-            "embeds": [embed],
-            "username": self.config.minecraft.server_name,
-            "avatar_url": self.SERVER_ICON_URL,
-        }
-
-        try:
-            async with self.http_session.post(
-                webhook_url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status in (200, 204):
-                    return True
-                elif resp.status == 429:
-                    logger.warning("Server webhook rate limited")
-                    return False
-                else:
-                    logger.warning(f"Server webhook returned status: {resp.status}")
-                    return False
-        except Exception as e:
-            logger.error(f"Server webhook embed error: {e}")
-            return False
-
     async def process_messages(self, messages: list) -> None:
         """Process messages from KubeJS (chat, join, leave)."""
         for msg in messages:
@@ -279,13 +238,12 @@ class MinecraftBridge(commands.Cog):
 
             if msg_type == "chat":
                 content = msg.get("message", "")
-                avatar_url = f"https://mc-heads.net/avatar/{uuid}/128"
-                await self.send_webhook_message(content, player, avatar_url)
+                await self.send_webhook_message(content, player)
                 logger.info(f"Relayed chat from {player}: {content[:50]}...")
 
             elif msg_type == "join":
                 icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
-                await self.send_server_webhook_embed(
+                await self.send_webhook_embed(
                     None,
                     self.EMBED_COLOR_GREEN,
                     icon_url,
@@ -295,7 +253,7 @@ class MinecraftBridge(commands.Cog):
 
             elif msg_type == "leave":
                 icon_url = f"https://mc-heads.net/avatar/{uuid}/32"
-                await self.send_server_webhook_embed(
+                await self.send_webhook_embed(
                     None,
                     self.EMBED_COLOR_RED,
                     icon_url,
@@ -316,7 +274,7 @@ class MinecraftBridge(commands.Cog):
 
             if not was_online:
                 server_name = self.config.minecraft.server_name
-                await self.send_server_webhook_embed(
+                await self.send_webhook_embed(
                     None,
                     self.EMBED_COLOR_BLUE,
                     self.SERVER_ICON_URL,
@@ -332,7 +290,7 @@ class MinecraftBridge(commands.Cog):
 
             if was_online:
                 server_name = self.config.minecraft.server_name
-                await self.send_server_webhook_embed(
+                await self.send_webhook_embed(
                     None,
                     self.EMBED_COLOR_ORANGE,
                     self.SERVER_ICON_URL,
