@@ -3,6 +3,7 @@ services:
     build: .
     container_name: minecraft-discord-bot
     restart: unless-stopped
+    stop_grace_period: 15s
     env_file:
       - .env
     # Run as pterodactyl user to access Pterodactyl volumes

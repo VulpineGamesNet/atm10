@@ -517,12 +517,26 @@ def main() -> None:
 
     bot = DiscordMCBot(config)
 
+    # Set up signal handlers for graceful shutdown
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    def handle_signal(sig: signal.Signals) -> None:
+        logger.info(f"Received signal {sig.name}, shutting down...")
+        loop.create_task(bot.close())
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, handle_signal, sig)
+
     try:
-        bot.run(config.discord.token)
+        loop.run_until_complete(bot.start(config.discord.token))
     except discord.LoginFailure:
         logger.error("Invalid Discord token")
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
 
 if __name__ == "__main__":
