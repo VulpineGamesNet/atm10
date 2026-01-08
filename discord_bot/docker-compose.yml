@@ -14,9 +14,10 @@ services:
       # Replace <server-uuid> with your actual server UUID
       # Find it with: sudo ls /var/lib/pterodactyl/volumes/
       - /var/lib/pterodactyl/volumes/<server-uuid>/kubejs/server_data:/app/server_data:ro
-    # For connecting to Minecraft RCON
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # Note: Set RCON_HOST in .env to:
-    # - "host.docker.internal" for containers on same host
-    # - The actual IP/hostname if running on different machine
+    networks:
+      - pterodactyl_nw
+
+# Use external Pterodactyl network for RCON access
+networks:
+  pterodactyl_nw:
+    external: true
