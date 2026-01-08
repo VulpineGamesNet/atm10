@@ -50,6 +50,8 @@ class MinecraftBridge(commands.Cog):
     STATUS_COOLDOWN: int = 30  # seconds between status notifications
     OFFLINE_THRESHOLD: int = 3  # consecutive failed checks before "offline"
 
+    WEBHOOK_NAME = "Minecraft Bridge"
+
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
         self.config = config
@@ -58,6 +60,7 @@ class MinecraftBridge(commands.Cog):
         self.last_topic: Optional[str] = None
         self.server_online: bool = False
         self.http_session: Optional[aiohttp.ClientSession] = None
+        self.managed_webhook: Optional[discord.Webhook] = None
         # Debounce state
         self.last_status_notification: float = 0
         self.consecutive_offline_checks: int = 0
@@ -75,6 +78,39 @@ class MinecraftBridge(commands.Cog):
         self.update_channel_topic.cancel()
         if self.http_session:
             await self.http_session.close()
+
+    async def setup_webhook(self) -> None:
+        """Get or create a webhook for the configured channel."""
+        # Skip if manual webhook URL is configured
+        if self.config.discord.webhook_url:
+            logger.info("Using manually configured webhook URL")
+            return
+
+        channel = self.bot.get_channel(self.config.discord.channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            logger.warning("Could not find text channel for webhook setup")
+            return
+
+        try:
+            webhooks = await channel.webhooks()
+            # Look for existing webhook created by this bot
+            for webhook in webhooks:
+                if webhook.name == self.WEBHOOK_NAME:
+                    self.managed_webhook = webhook
+                    logger.info(f"Found existing webhook: {webhook.name}")
+                    return
+
+            # Create new webhook
+            self.managed_webhook = await channel.create_webhook(
+                name=self.WEBHOOK_NAME,
+                reason="Minecraft chat bridge webhook",
+            )
+            logger.info(f"Created new webhook: {self.managed_webhook.name}")
+
+        except discord.Forbidden:
+            logger.warning("Missing MANAGE_WEBHOOKS permission - configure DISCORD_WEBHOOK_URL manually")
+        except Exception as e:
+            logger.error(f"Failed to setup webhook: {e}")
 
     def _rcon_sync(self, command: str) -> str:
         """Synchronous RCON command execution using raw sockets."""
@@ -159,18 +195,35 @@ class MinecraftBridge(commands.Cog):
         self,
         content: str,
         player_name: Optional[str] = None,
+        player_uuid: Optional[str] = None,
     ) -> bool:
         """Send a message via Discord webhook."""
+        # Use managed webhook if available
+        if self.managed_webhook:
+            try:
+                avatar_url = f"https://mc-heads.net/avatar/{player_uuid}/128" if player_uuid else self.SERVER_ICON_URL
+                await self.managed_webhook.send(
+                    content=content,
+                    username=player_name or self.config.minecraft.server_name,
+                    avatar_url=avatar_url,
+                )
+                return True
+            except discord.HTTPException as e:
+                logger.error(f"Managed webhook error: {e}")
+                return False
+
+        # Fall back to manual webhook URL
         if not self.config.discord.webhook_url:
-            logger.debug("Webhook URL not configured")
+            logger.debug("No webhook available")
             return False
 
         if not self.http_session:
             return False
 
+        avatar_url = f"https://mc-heads.net/avatar/{player_uuid}/128" if player_uuid else self.SERVER_ICON_URL
         payload = {
             "content": content,
-            "avatar_url": self.SERVER_ICON_URL,
+            "avatar_url": avatar_url,
         }
         if player_name:
             payload["username"] = player_name
@@ -201,22 +254,39 @@ class MinecraftBridge(commands.Cog):
         author_name: Optional[str] = None,
     ) -> bool:
         """Send an embed via Discord webhook (for system messages like join/leave/status)."""
+        # Build embed
+        embed = discord.Embed(color=color)
+        if description:
+            embed.description = description
+        if icon_url and author_name:
+            embed.set_author(name=author_name, icon_url=icon_url)
+
+        # Use managed webhook if available
+        if self.managed_webhook:
+            try:
+                await self.managed_webhook.send(
+                    embed=embed,
+                    username=self.config.minecraft.server_name,
+                    avatar_url=self.SERVER_ICON_URL,
+                )
+                return True
+            except discord.HTTPException as e:
+                logger.error(f"Managed webhook embed error: {e}")
+                return False
+
+        # Fall back to manual webhook URL
         if not self.config.discord.webhook_url:
-            logger.debug("Webhook URL not configured")
+            logger.debug("No webhook available")
             return False
 
         if not self.http_session:
             return False
 
-        embed = {"color": color}
-        if description:
-            embed["description"] = description
-        if icon_url and author_name:
-            embed["author"] = {"name": author_name, "icon_url": icon_url}
-
         payload = {
-            "embeds": [embed],
+            "embeds": [{"color": color, "description": description if description else None,
+                       "author": {"name": author_name, "icon_url": icon_url} if icon_url and author_name else None}],
             "username": self.config.minecraft.server_name,
+            "avatar_url": self.SERVER_ICON_URL,
         }
 
         try:
@@ -255,7 +325,7 @@ class MinecraftBridge(commands.Cog):
 
             if msg_type == "chat":
                 content = msg.get("message", "")
-                await self.send_webhook_message(content, player)
+                await self.send_webhook_message(content, player, uuid)
                 logger.info(f"Relayed chat from {player}: {content[:50]}...")
 
             elif msg_type == "join":
@@ -572,9 +642,11 @@ class DiscordMCBot(commands.Bot):
         )
         await self.change_presence(activity=activity)
 
-        # Send bot startup notification
+        # Setup webhook (must be done after bot is ready to access channels)
         bridge = self.get_cog("MinecraftBridge")
         if bridge:
+            await bridge.setup_webhook()
+            # Send bot startup notification
             await bridge.send_bot_status(
                 "Discord bot started",
                 MinecraftBridge.EMBED_COLOR_PURPLE,
