@@ -543,16 +543,21 @@ class DiscordMCBot(commands.Bot):
         await self.add_cog(MinecraftBridge(self, self.config))
 
         # Sync slash commands
-        if self.config.discord.guild_id:
-            # Sync to specific guild for instant updates during development
-            guild = discord.Object(id=self.config.discord.guild_id)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info(f"Synced commands to guild {self.config.discord.guild_id}")
-        else:
-            # Global sync (can take up to an hour to propagate)
-            await self.tree.sync()
-            logger.info("Synced commands globally")
+        try:
+            if self.config.discord.guild_id:
+                # Sync to specific guild for instant updates during development
+                guild = discord.Object(id=self.config.discord.guild_id)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info(f"Synced commands to guild {self.config.discord.guild_id}")
+            else:
+                # Global sync (can take up to an hour to propagate)
+                await self.tree.sync()
+                logger.info("Synced commands globally")
+        except discord.Forbidden:
+            logger.warning("Missing access to sync commands - re-invite bot with applications.commands scope")
+        except Exception as e:
+            logger.error(f"Failed to sync commands: {e}")
 
         logger.info("Bot setup complete")
 
