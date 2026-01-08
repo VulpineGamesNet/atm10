@@ -227,12 +227,12 @@ class MinecraftBridge(commands.Cog):
 
             if msg_type == "chat":
                 content = msg.get("message", "")
-                avatar_url = f"https://crafatar.com/avatars/{uuid}?size=128&overlay"
+                avatar_url = f"https://mc-heads.net/avatar/{uuid}/128"
                 await self.send_webhook_message(content, player, avatar_url)
                 logger.info(f"Relayed chat from {player}: {content[:50]}...")
 
             elif msg_type == "join":
-                icon_url = f"https://crafatar.com/avatars/{uuid}?size=64&overlay"
+                icon_url = f"https://mc-heads.net/avatar/{uuid}/64"
                 await self.send_webhook_embed(
                     f":green_circle: **{player}** logged in",
                     self.EMBED_COLOR_GREEN,
@@ -241,7 +241,7 @@ class MinecraftBridge(commands.Cog):
                 logger.info(f"Sent join notification for {player}")
 
             elif msg_type == "leave":
-                icon_url = f"https://crafatar.com/avatars/{uuid}?size=64&overlay"
+                icon_url = f"https://mc-heads.net/avatar/{uuid}/64"
                 await self.send_webhook_embed(
                     f":red_circle: **{player}** logged out",
                     self.EMBED_COLOR_RED,
