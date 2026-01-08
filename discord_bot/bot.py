@@ -9,6 +9,7 @@ Handles:
 """
 
 import asyncio
+import io
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from PIL import Image
 
 from config import Config, load_config
 
@@ -316,6 +318,55 @@ class MinecraftBridge(commands.Cog):
             status,
         )
 
+    async def generate_player_avatars_image(self, players: list) -> Optional[io.BytesIO]:
+        """Generate a combined image of player avatars."""
+        if not players or not self.http_session:
+            return None
+
+        avatar_size = 32
+        padding = 4
+        avatars = []
+
+        # Fetch all player avatars
+        for player in players[:20]:  # Limit to 20 players
+            if isinstance(player, dict):
+                uuid = player.get("uuid", "")
+            else:
+                continue
+
+            if not uuid:
+                continue
+
+            try:
+                url = f"https://mc-heads.net/avatar/{uuid}/{avatar_size}"
+                async with self.http_session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        img = Image.open(io.BytesIO(data))
+                        avatars.append(img)
+            except Exception as e:
+                logger.debug(f"Failed to fetch avatar for {uuid}: {e}")
+                continue
+
+        if not avatars:
+            return None
+
+        # Create combined image (horizontal row)
+        total_width = len(avatars) * avatar_size + (len(avatars) - 1) * padding
+        combined = Image.new('RGBA', (total_width, avatar_size), (0, 0, 0, 0))
+
+        x_offset = 0
+        for avatar in avatars:
+            combined.paste(avatar, (x_offset, 0))
+            x_offset += avatar_size + padding
+
+        # Save to buffer
+        buffer = io.BytesIO()
+        combined.save(buffer, format='PNG')
+        buffer.seek(0)
+
+        return buffer
+
     async def process_messages(self, messages: list) -> None:
         """Process messages from KubeJS (chat, join, leave)."""
         for msg in messages:
@@ -547,29 +598,28 @@ class MinecraftBridge(commands.Cog):
 
         if player_count == 0:
             embed.description = "No players online"
+            await interaction.response.send_message(embed=embed)
         else:
-            # Build player list - players contain {name, uuid} objects
+            # Build player list
             player_lines = []
-            first_uuid = None
             for player in players:
                 if isinstance(player, dict):
                     name = player.get("name", "Unknown")
-                    uuid = player.get("uuid", "")
-                    if not first_uuid and uuid:
-                        first_uuid = uuid
-                    player_lines.append(f"• **{name}**")
                 else:
-                    # Fallback for old format (just string names)
-                    player_lines.append(f"• **{player}**")
+                    name = str(player)
+                player_lines.append(f"• **{name}**")
 
             embed.description = "\n".join(player_lines)
-            logger.info(f"/players: first_uuid={first_uuid}, players={players}")
 
-            # Set thumbnail to first player's avatar
-            if first_uuid:
-                embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{first_uuid}/128")
+            # Generate combined avatar image
+            avatar_buffer = await self.generate_player_avatars_image(players)
 
-        await interaction.response.send_message(embed=embed)
+            if avatar_buffer:
+                file = discord.File(avatar_buffer, filename="players.png")
+                embed.set_image(url="attachment://players.png")
+                await interaction.response.send_message(embed=embed, file=file)
+            else:
+                await interaction.response.send_message(embed=embed)
 
 
 class DiscordMCBot(commands.Bot):
