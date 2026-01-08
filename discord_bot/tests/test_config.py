@@ -78,7 +78,6 @@ class TestLoadConfig:
         monkeypatch.setenv("RCON_HOST", "localhost")
         monkeypatch.setenv("RCON_PORT", "25575")
         monkeypatch.setenv("RCON_PASSWORD", "secret")
-        monkeypatch.setenv("STATS_FILE", "/path/to/stats.json")
         monkeypatch.setenv("SERVER_NAME", "Test Server")
 
         config = load_config(env_file=None)
@@ -89,7 +88,6 @@ class TestLoadConfig:
         assert config.minecraft.rcon_host == "localhost"
         assert config.minecraft.rcon_port == 25575
         assert config.minecraft.rcon_password == "secret"
-        assert config.minecraft.stats_file == "/path/to/stats.json"
         assert config.minecraft.server_name == "Test Server"
 
     def test_load_config_missing_token(self, monkeypatch):
@@ -128,7 +126,6 @@ class TestLoadConfig:
         monkeypatch.delenv("DISCORD_GUILD_ID", raising=False)
         monkeypatch.delenv("RCON_HOST", raising=False)
         monkeypatch.delenv("RCON_PORT", raising=False)
-        monkeypatch.delenv("STATS_FILE", raising=False)
         monkeypatch.delenv("SERVER_NAME", raising=False)
         monkeypatch.delenv("TOPIC_UPDATE_INTERVAL", raising=False)
         monkeypatch.delenv("STATS_CHECK_INTERVAL", raising=False)
@@ -201,13 +198,11 @@ class TestDataclasses:
             rcon_host="host",
             rcon_port=25575,
             rcon_password="pass",
-            stats_file="/path",
             server_name="Server",
         )
         assert config.rcon_host == "host"
         assert config.rcon_port == 25575
         assert config.rcon_password == "pass"
-        assert config.stats_file == "/path"
         assert config.server_name == "Server"
 
     def test_settings_defaults(self):
@@ -224,7 +219,6 @@ class TestDataclasses:
             rcon_host="host",
             rcon_port=25575,
             rcon_password="pass",
-            stats_file="/path",
         )
         settings = Settings()
 

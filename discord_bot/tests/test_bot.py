@@ -1,13 +1,12 @@
 """Tests for the Discord bot functionality."""
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
 
-from bot import MinecraftBridge, DiscordMCBot
+from bot import DiscordMCBot, MinecraftBridge
 from config import Config, DiscordConfig, MinecraftConfig, Settings
 
 
@@ -18,13 +17,13 @@ def config():
         discord=DiscordConfig(
             token="test_token",
             channel_id=123456789,
+            webhook_url="https://discord.com/api/webhooks/test",
             guild_id=987654321,
         ),
         minecraft=MinecraftConfig(
             rcon_host="localhost",
             rcon_port=25575,
             rcon_password="test_password",
-            stats_file="/tmp/test_stats.json",
             server_name="Test Server",
         ),
         settings=Settings(
@@ -168,51 +167,39 @@ class TestUsernameSanitization:
         assert result == "Test-User_123"
 
 
-class TestStatsFileReading:
-    """Tests for reading server stats file."""
+class TestRCONStats:
+    """Tests for RCON-based stats retrieval."""
 
-    def test_read_stats_file_success(self, bridge, tmp_path):
-        """Test successful stats file reading."""
-        stats_file = tmp_path / "stats.json"
-        stats_data = {
+    @pytest.mark.asyncio
+    async def test_get_stats_via_rcon_success(self, bridge):
+        """Test successful stats retrieval via RCON."""
+        stats_json = json.dumps({
             "tps": 19.5,
             "playerCount": 5,
             "players": ["Player1", "Player2"],
             "uptime": "2h 30m",
-            "timestamp": 1234567890,
-        }
-        stats_file.write_text(json.dumps(stats_data))
-        bridge.config.minecraft.stats_file = str(stats_file)
+            "messages": [],
+        })
+        with patch.object(bridge, "send_rcon_command", new_callable=AsyncMock, return_value=stats_json):
+            result = await bridge.get_stats_via_rcon()
 
-        result = bridge.read_stats_file()
+        assert result is not None
+        assert result["tps"] == 19.5
+        assert result["playerCount"] == 5
 
-        assert result == stats_data
-
-    def test_read_stats_file_not_found(self, bridge):
-        """Test reading non-existent stats file."""
-        bridge.config.minecraft.stats_file = "/nonexistent/path.json"
-
-        result = bridge.read_stats_file()
-
-        assert result is None
-
-    def test_read_stats_file_invalid_json(self, bridge, tmp_path):
-        """Test reading invalid JSON file."""
-        stats_file = tmp_path / "stats.json"
-        stats_file.write_text("not valid json {")
-        bridge.config.minecraft.stats_file = str(stats_file)
-
-        result = bridge.read_stats_file()
+    @pytest.mark.asyncio
+    async def test_get_stats_via_rcon_failure(self, bridge):
+        """Test stats retrieval when RCON fails."""
+        with patch.object(bridge, "send_rcon_command", new_callable=AsyncMock, return_value=None):
+            result = await bridge.get_stats_via_rcon()
 
         assert result is None
 
-    def test_read_stats_file_empty(self, bridge, tmp_path):
-        """Test reading empty file."""
-        stats_file = tmp_path / "stats.json"
-        stats_file.write_text("")
-        bridge.config.minecraft.stats_file = str(stats_file)
-
-        result = bridge.read_stats_file()
+    @pytest.mark.asyncio
+    async def test_get_stats_via_rcon_invalid_json(self, bridge):
+        """Test stats retrieval with invalid JSON response."""
+        with patch.object(bridge, "send_rcon_command", new_callable=AsyncMock, return_value="not valid json"):
+            result = await bridge.get_stats_via_rcon()
 
         assert result is None
 
@@ -404,6 +391,90 @@ class TestChannelTopicUpdate:
         await bridge.update_channel_topic()
 
         mock_channel.edit.assert_not_called()
+
+
+class TestServerStatusDetection:
+    """Tests for server start/stop detection."""
+
+    @pytest.mark.asyncio
+    async def test_server_comes_online(self, bridge):
+        """Test detection when server comes online."""
+        bridge.server_online = False
+        stats = {"tps": 20.0, "playerCount": 0, "messages": []}
+
+        with patch.object(bridge, "get_stats_via_rcon", new_callable=AsyncMock, return_value=stats):
+            with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
+                await bridge.poll_server_stats()
+
+        assert bridge.server_online is True
+        mock_embed.assert_called_once()
+        assert "online" in mock_embed.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_server_goes_offline(self, bridge):
+        """Test detection when server goes offline."""
+        bridge.server_online = True
+
+        with patch.object(bridge, "get_stats_via_rcon", new_callable=AsyncMock, return_value=None):
+            with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
+                await bridge.poll_server_stats()
+
+        assert bridge.server_online is False
+        mock_embed.assert_called_once()
+        assert "restarting" in mock_embed.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_server_stays_online(self, bridge):
+        """Test no notification when server stays online."""
+        bridge.server_online = True
+        stats = {"tps": 20.0, "playerCount": 0, "messages": []}
+
+        with patch.object(bridge, "get_stats_via_rcon", new_callable=AsyncMock, return_value=stats):
+            with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
+                await bridge.poll_server_stats()
+
+        assert bridge.server_online is True
+        mock_embed.assert_not_called()
+
+
+class TestMessageProcessing:
+    """Tests for processing messages from KubeJS."""
+
+    @pytest.mark.asyncio
+    async def test_process_chat_message(self, bridge):
+        """Test processing a chat message."""
+        messages = [{"type": "chat", "player": "Steve", "uuid": "abc-123", "message": "Hello!"}]
+
+        with patch.object(bridge, "send_webhook_message", new_callable=AsyncMock) as mock_webhook:
+            await bridge.process_messages(messages)
+
+        mock_webhook.assert_called_once()
+        assert mock_webhook.call_args[0][0] == "Hello!"
+        assert mock_webhook.call_args[0][1] == "Steve"
+
+    @pytest.mark.asyncio
+    async def test_process_join_message(self, bridge):
+        """Test processing a join message."""
+        messages = [{"type": "join", "player": "Steve", "uuid": "abc-123"}]
+
+        with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
+            await bridge.process_messages(messages)
+
+        mock_embed.assert_called_once()
+        assert "logged in" in mock_embed.call_args[0][0]
+        assert "Steve" in mock_embed.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_process_leave_message(self, bridge):
+        """Test processing a leave message."""
+        messages = [{"type": "leave", "player": "Steve", "uuid": "abc-123"}]
+
+        with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
+            await bridge.process_messages(messages)
+
+        mock_embed.assert_called_once()
+        assert "logged out" in mock_embed.call_args[0][0]
+        assert "Steve" in mock_embed.call_args[0][0]
 
 
 class TestDiscordMCBot:

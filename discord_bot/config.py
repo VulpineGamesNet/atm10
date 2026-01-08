@@ -13,6 +13,7 @@ class DiscordConfig:
 
     token: str
     channel_id: int
+    webhook_url: Optional[str] = None
     guild_id: Optional[int] = None
 
 
@@ -23,7 +24,6 @@ class MinecraftConfig:
     rcon_host: str
     rcon_port: int
     rcon_password: str
-    stats_file: str
     server_name: str = "Minecraft Server"
 
 
@@ -88,6 +88,7 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
     discord_config = DiscordConfig(
         token=_get_env("DISCORD_TOKEN", required=True),
         channel_id=_get_env_int("DISCORD_CHANNEL_ID", 0),
+        webhook_url=_get_env("DISCORD_WEBHOOK_URL"),
         guild_id=_get_env_int("DISCORD_GUILD_ID", 0) or None,
     )
 
@@ -99,7 +100,6 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
         rcon_host=_get_env("RCON_HOST", "localhost"),
         rcon_port=_get_env_int("RCON_PORT", 25575),
         rcon_password=_get_env("RCON_PASSWORD", required=True),
-        stats_file=_get_env("STATS_FILE", "/app/server_data/server_stats.json"),
         server_name=_get_env("SERVER_NAME", "Minecraft Server"),
     )
 

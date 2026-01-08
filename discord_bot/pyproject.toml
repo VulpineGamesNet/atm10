@@ -5,6 +5,7 @@ description = "Discord bot for Minecraft chat sync and server status"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aiohttp>=3.9.0",
     "discord-py>=2.3.0",
     "python-dotenv>=1.0.0",
 ]

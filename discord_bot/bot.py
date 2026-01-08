@@ -3,30 +3,31 @@ Discord-Minecraft Chat Sync Bot
 
 Handles:
 - Discord -> Minecraft chat relay via RCON
+- Minecraft -> Discord chat relay via webhook (polling RCON /getstats)
 - Channel topic updates with server stats (TPS, players, uptime)
+- Server start/stop notifications (via RCON connectivity monitoring)
 """
 
 import asyncio
 import json
 import logging
 import re
-import struct
 import socket
-from pathlib import Path
+import struct
 from typing import Optional
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from config import load_config, Config
+from config import Config, load_config
 
-# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-    ]
+    ],
 )
 logger = logging.getLogger("discord_mc_bot")
 
@@ -34,43 +35,42 @@ logger = logging.getLogger("discord_mc_bot")
 class MinecraftBridge(commands.Cog):
     """Handles Minecraft <-> Discord communication."""
 
+    EMBED_COLOR_GREEN = 0x57F287
+    EMBED_COLOR_RED = 0xED4245
+    EMBED_COLOR_ORANGE = 0xE67E22
+    EMBED_COLOR_BLUE = 0x3498DB
+
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
         self.config = config
         self.last_stats: Optional[dict] = None
         self.rcon_lock = asyncio.Lock()
         self.last_topic: Optional[str] = None
+        self.server_online: bool = False
+        self.http_session: Optional[aiohttp.ClientSession] = None
 
     async def cog_load(self) -> None:
         """Called when cog is loaded."""
+        self.http_session = aiohttp.ClientSession()
+        self.poll_server_stats.start()
         self.update_channel_topic.start()
-        self.read_server_stats.start()
         logger.info("MinecraftBridge cog loaded")
 
     async def cog_unload(self) -> None:
         """Called when cog is unloaded."""
+        self.poll_server_stats.cancel()
         self.update_channel_topic.cancel()
-        self.read_server_stats.cancel()
-
-    async def send_rcon_command(self, command: str) -> Optional[str]:
-        """Send a command to Minecraft server via RCON."""
-        async with self.rcon_lock:
-            try:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, self._rcon_sync, command)
-                return result
-            except Exception as e:
-                logger.error(f"RCON error: {e}")
-                return None
+        if self.http_session:
+            await self.http_session.close()
 
     def _rcon_sync(self, command: str) -> str:
         """Synchronous RCON command execution using raw sockets."""
         SERVERDATA_AUTH = 3
-        SERVERDATA_AUTH_RESPONSE = 2
         SERVERDATA_EXECCOMMAND = 2
-        SERVERDATA_RESPONSE_VALUE = 0
 
-        def send_packet(sock: socket.socket, packet_id: int, packet_type: int, payload: str) -> None:
+        def send_packet(
+            sock: socket.socket, packet_id: int, packet_type: int, payload: str
+        ) -> None:
             """Send an RCON packet."""
             payload_bytes = payload.encode("utf-8") + b"\x00\x00"
             packet = struct.pack("<ii", packet_id, packet_type) + payload_bytes
@@ -79,13 +79,11 @@ class MinecraftBridge(commands.Cog):
 
         def recv_packet(sock: socket.socket) -> tuple[int, int, str]:
             """Receive an RCON packet."""
-            # Read packet length
             length_data = sock.recv(4)
             if len(length_data) < 4:
                 raise ConnectionError("Failed to read packet length")
             length = struct.unpack("<i", length_data)[0]
 
-            # Read packet data
             data = b""
             while len(data) < length:
                 chunk = sock.recv(length - len(data))
@@ -103,16 +101,16 @@ class MinecraftBridge(commands.Cog):
         sock.settimeout(5.0)
 
         try:
-            sock.connect((self.config.minecraft.rcon_host, self.config.minecraft.rcon_port))
+            sock.connect(
+                (self.config.minecraft.rcon_host, self.config.minecraft.rcon_port)
+            )
 
-            # Authenticate
             send_packet(sock, 1, SERVERDATA_AUTH, self.config.minecraft.rcon_password)
             packet_id, packet_type, _ = recv_packet(sock)
 
             if packet_id == -1:
                 raise ConnectionError("RCON authentication failed")
 
-            # Send command
             send_packet(sock, 2, SERVERDATA_EXECCOMMAND, command)
             _, _, response = recv_packet(sock)
 
@@ -121,49 +119,184 @@ class MinecraftBridge(commands.Cog):
         finally:
             sock.close()
 
-    def read_stats_file(self) -> Optional[dict]:
-        """Read server stats from file written by KubeJS."""
-        try:
-            stats_path = Path(self.config.minecraft.stats_file)
-            if not stats_path.exists():
-                logger.debug(f"Stats file not found: {stats_path}")
+    async def send_rcon_command(self, command: str) -> Optional[str]:
+        """Send a command to Minecraft server via RCON."""
+        async with self.rcon_lock:
+            try:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, self._rcon_sync, command)
+                return result
+            except Exception as e:
+                logger.debug(f"RCON error: {e}")
                 return None
 
-            with open(stats_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Invalid JSON in stats file: {e}")
-            return None
-        except Exception as e:
-            logger.warning(f"Could not read stats file: {e}")
+    async def get_stats_via_rcon(self) -> Optional[dict]:
+        """Get server stats via RCON /getstats command."""
+        response = await self.send_rcon_command("getstats")
+        if response is None:
             return None
 
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON from /getstats: {e}")
+            return None
+
+    async def send_webhook_message(
+        self,
+        content: str,
+        username: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> bool:
+        """Send a message via Discord webhook."""
+        if not self.config.discord.webhook_url:
+            logger.debug("Webhook URL not configured")
+            return False
+
+        if not self.http_session:
+            return False
+
+        payload = {"content": content}
+        if username:
+            payload["username"] = username
+        if avatar_url:
+            payload["avatar_url"] = avatar_url
+
+        try:
+            async with self.http_session.post(
+                self.config.discord.webhook_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status in (200, 204):
+                    return True
+                elif resp.status == 429:
+                    logger.warning("Webhook rate limited")
+                    return False
+                else:
+                    logger.warning(f"Webhook returned status: {resp.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return False
+
+    async def send_webhook_embed(
+        self,
+        description: str,
+        color: int,
+        thumbnail_url: Optional[str] = None,
+    ) -> bool:
+        """Send an embed via Discord webhook."""
+        if not self.config.discord.webhook_url:
+            logger.debug("Webhook URL not configured")
+            return False
+
+        if not self.http_session:
+            return False
+
+        embed = {"description": description, "color": color}
+        if thumbnail_url:
+            embed["thumbnail"] = {"url": thumbnail_url}
+
+        payload = {"embeds": [embed]}
+
+        try:
+            async with self.http_session.post(
+                self.config.discord.webhook_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status in (200, 204):
+                    return True
+                elif resp.status == 429:
+                    logger.warning("Webhook rate limited")
+                    return False
+                else:
+                    logger.warning(f"Webhook returned status: {resp.status}")
+                    return False
+        except Exception as e:
+            logger.error(f"Webhook embed error: {e}")
+            return False
+
+    async def process_messages(self, messages: list) -> None:
+        """Process messages from KubeJS (chat, join, leave)."""
+        for msg in messages:
+            msg_type = msg.get("type")
+            player = msg.get("player", "Unknown")
+            uuid = msg.get("uuid", "")
+
+            if msg_type == "chat":
+                content = msg.get("message", "")
+                avatar_url = f"https://crafatar.com/avatars/{uuid}?size=128&overlay"
+                await self.send_webhook_message(content, player, avatar_url)
+                logger.info(f"Relayed chat from {player}: {content[:50]}...")
+
+            elif msg_type == "join":
+                icon_url = f"https://crafatar.com/avatars/{uuid}?size=64&overlay"
+                await self.send_webhook_embed(
+                    f":green_circle: **{player}** logged in",
+                    self.EMBED_COLOR_GREEN,
+                    icon_url,
+                )
+                logger.info(f"Sent join notification for {player}")
+
+            elif msg_type == "leave":
+                icon_url = f"https://crafatar.com/avatars/{uuid}?size=64&overlay"
+                await self.send_webhook_embed(
+                    f":red_circle: **{player}** logged out",
+                    self.EMBED_COLOR_RED,
+                    icon_url,
+                )
+                logger.info(f"Sent leave notification for {player}")
+
+    @tasks.loop(seconds=2)
+    async def poll_server_stats(self) -> None:
+        """Poll server stats via RCON and process messages."""
+        stats = await self.get_stats_via_rcon()
+
+        was_online = self.server_online
+
+        if stats:
+            self.last_stats = stats
+            self.server_online = True
+
+            if not was_online:
+                server_name = self.config.minecraft.server_name
+                await self.send_webhook_embed(
+                    f":white_check_mark: **{server_name}** is now online!",
+                    self.EMBED_COLOR_BLUE,
+                )
+                logger.info("Server came online - sent notification")
+
+            messages = stats.get("messages", [])
+            if messages:
+                await self.process_messages(messages)
+        else:
+            self.server_online = False
+
+            if was_online:
+                server_name = self.config.minecraft.server_name
+                await self.send_webhook_embed(
+                    f":octagonal_sign: **{server_name}** is restarting...",
+                    self.EMBED_COLOR_ORANGE,
+                )
+                logger.info("Server went offline - sent notification")
+
+    @poll_server_stats.before_loop
+    async def before_poll_stats(self) -> None:
+        await self.bot.wait_until_ready()
+
     def sanitize_discord_message(self, content: str) -> str:
-        """
-        Sanitize Discord message for Minecraft.
-        - Remove/escape special characters
-        - Truncate to max length
-        - Remove Discord formatting
-        """
-        # Remove Discord mentions (convert to text)
+        """Sanitize Discord message for Minecraft."""
         content = re.sub(r"<@!?(\d+)>", "[mention]", content)
         content = re.sub(r"<#(\d+)>", "[channel]", content)
         content = re.sub(r"<@&(\d+)>", "[role]", content)
-
-        # Remove custom emojis (keep name)
         content = re.sub(r"<a?:(\w+):\d+>", r":\1:", content)
-
-        # Remove markdown formatting that might break MC
         content = content.replace('"', "'")
         content = content.replace("\\", "")
-
-        # Remove newlines (replace with space)
         content = content.replace("\n", " ").replace("\r", " ")
-
-        # Remove multiple spaces
         content = re.sub(r"\s+", " ", content).strip()
 
-        # Truncate
         max_len = self.config.settings.max_message_length
         if len(content) > max_len:
             content = content[: max_len - 3] + "..."
@@ -172,13 +305,9 @@ class MinecraftBridge(commands.Cog):
 
     def sanitize_username(self, username: str) -> str:
         """Sanitize Discord username for Minecraft command."""
-        # Remove special characters, keep alphanumeric, spaces, dashes, underscores
         username = re.sub(r"[^\w\s\-_]", "", username)
-        # Limit length
         username = username[:16]
-        # Remove leading/trailing whitespace
         username = username.strip()
-        # Default if empty
         if not username:
             username = "Discord"
         return username
@@ -186,18 +315,14 @@ class MinecraftBridge(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Handle Discord messages and relay to Minecraft."""
-        # Ignore bots
         if message.author.bot:
             return
 
-        # Only process messages in the configured channel
         if message.channel.id != self.config.discord.channel_id:
             return
 
-        # Get message content
         content = message.content
         if not content:
-            # Handle attachment-only messages
             if message.attachments:
                 content = "[attachment]"
             elif message.stickers:
@@ -205,17 +330,11 @@ class MinecraftBridge(commands.Cog):
             else:
                 return
 
-        # Sanitize for Minecraft
         content = self.sanitize_discord_message(content)
         if not content:
             return
 
-        # Get username (nickname or display name)
         username = self.sanitize_username(message.author.display_name)
-
-        # Send to Minecraft via RCON
-        # Escape content for command line
-        # The KubeJS script has /discordmsg <username> <message>
         command = f'discordmsg "{username}" {content}'
 
         logger.info(f"Relaying message from {username}: {content[:50]}...")
@@ -223,28 +342,15 @@ class MinecraftBridge(commands.Cog):
         result = await self.send_rcon_command(command)
         if result is None:
             logger.warning(f"Failed to relay message from {username}")
-            # Add reaction to indicate failure
             try:
-                await message.add_reaction("\u274c")  # X emoji
+                await message.add_reaction("\u274c")
             except discord.Forbidden:
                 pass
         else:
-            # Add checkmark reaction on success (optional)
             try:
-                await message.add_reaction("\u2705")  # Checkmark emoji
+                await message.add_reaction("\u2705")
             except discord.Forbidden:
                 pass
-
-    @tasks.loop(seconds=5)
-    async def read_server_stats(self) -> None:
-        """Periodically read server stats from file."""
-        stats = self.read_stats_file()
-        if stats:
-            self.last_stats = stats
-
-    @read_server_stats.before_loop
-    async def before_read_stats(self) -> None:
-        await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=60)
     async def update_channel_topic(self) -> None:
@@ -263,15 +369,12 @@ class MinecraftBridge(commands.Cog):
                 logger.warning("Configured channel is not a text channel")
                 return
 
-            # Build topic string
-            # Format: "TPS: 20.00 | Players: 42 | Uptime: 21h 1m"
             tps = self.last_stats.get("tps", 20.0)
             player_count = self.last_stats.get("playerCount", 0)
             uptime = self.last_stats.get("uptime", "0h 0m")
 
             topic = f"TPS: {tps:.2f} | Players: {player_count} | Uptime: {uptime}"
 
-            # Only update if topic changed (to avoid rate limits)
             if self.last_topic == topic:
                 return
 
@@ -320,7 +423,6 @@ class DiscordMCBot(commands.Bot):
         logger.info(f"Logged in as {self.user.name} ({self.user.id})")
         logger.info(f"Monitoring channel ID: {self.config.discord.channel_id}")
 
-        # Set bot status
         activity = discord.Activity(
             type=discord.ActivityType.watching,
             name=self.config.minecraft.server_name,
@@ -330,7 +432,6 @@ class DiscordMCBot(commands.Bot):
 
 def main() -> None:
     """Main entry point."""
-    # Load configuration from environment variables / .env file
     logger.info("Loading configuration from environment...")
 
     try:
@@ -344,9 +445,8 @@ def main() -> None:
         return
 
     logger.info(f"RCON host: {config.minecraft.rcon_host}:{config.minecraft.rcon_port}")
-    logger.info(f"Stats file: {config.minecraft.stats_file}")
+    logger.info(f"Webhook configured: {'Yes' if config.discord.webhook_url else 'No'}")
 
-    # Create and run bot
     bot = DiscordMCBot(config)
 
     try:
