@@ -156,16 +156,12 @@ class MinecraftBridge(commands.Cog):
         if not self.http_session:
             return False
 
-        # Format message with player name in bold
-        if player_name:
-            formatted_content = f"**{player_name}**: {content}"
-        else:
-            formatted_content = content
-
         payload = {
-            "content": formatted_content,
-            "username": self.config.minecraft.server_name,
+            "content": content,
+            "avatar_url": self.SERVER_ICON_URL,
         }
+        if player_name:
+            payload["username"] = player_name
 
         try:
             async with self.http_session.post(
