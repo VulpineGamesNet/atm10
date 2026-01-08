@@ -39,6 +39,7 @@ class MinecraftBridge(commands.Cog):
     EMBED_COLOR_RED = 0xED4245
     EMBED_COLOR_ORANGE = 0xE67E22
     EMBED_COLOR_BLUE = 0x3498DB
+    SERVER_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
 
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
@@ -268,8 +269,10 @@ class MinecraftBridge(commands.Cog):
             if not was_online:
                 server_name = self.config.minecraft.server_name
                 await self.send_webhook_embed(
-                    f":white_check_mark: **{server_name}** is now online!",
+                    None,
                     self.EMBED_COLOR_BLUE,
+                    self.SERVER_ICON_URL,
+                    f"{server_name} is now online!",
                 )
                 logger.info("Server came online - sent notification")
 
@@ -282,8 +285,10 @@ class MinecraftBridge(commands.Cog):
             if was_online:
                 server_name = self.config.minecraft.server_name
                 await self.send_webhook_embed(
-                    f":octagonal_sign: **{server_name}** is restarting...",
+                    None,
                     self.EMBED_COLOR_ORANGE,
+                    self.SERVER_ICON_URL,
+                    f"{server_name} is restarting...",
                 )
                 logger.info("Server went offline - sent notification")
 
