@@ -14,6 +14,7 @@ import logging
 import re
 import socket
 import struct
+import time
 from typing import Optional
 
 import aiohttp
@@ -41,6 +42,10 @@ class MinecraftBridge(commands.Cog):
     EMBED_COLOR_BLUE = 0x3498DB
     SERVER_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
 
+    # Debounce settings for status notifications
+    STATUS_COOLDOWN: int = 30  # seconds between status notifications
+    OFFLINE_THRESHOLD: int = 3  # consecutive failed checks before "offline"
+
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
         self.config = config
@@ -49,6 +54,9 @@ class MinecraftBridge(commands.Cog):
         self.last_topic: Optional[str] = None
         self.server_online: bool = False
         self.http_session: Optional[aiohttp.ClientSession] = None
+        # Debounce state
+        self.last_status_notification: float = 0
+        self.consecutive_offline_checks: int = 0
 
     async def cog_load(self) -> None:
         """Called when cog is loaded."""
@@ -261,38 +269,52 @@ class MinecraftBridge(commands.Cog):
     async def poll_server_stats(self) -> None:
         """Poll server stats via RCON and process messages."""
         stats = await self.get_stats_via_rcon()
+        now = time.time()
 
         was_online = self.server_online
 
         if stats:
             self.last_stats = stats
-            self.server_online = True
+            self.consecutive_offline_checks = 0  # Reset offline counter
 
-            if not was_online:
-                server_name = self.config.minecraft.server_name
-                await self.send_webhook_embed(
-                    None,
-                    self.EMBED_COLOR_BLUE,
-                    self.SERVER_ICON_URL,
-                    f"{server_name} is now online!",
-                )
-                logger.info("Server came online - sent notification")
+            if not self.server_online:
+                self.server_online = True
+                # Only notify if cooldown has passed
+                if now - self.last_status_notification >= self.STATUS_COOLDOWN:
+                    server_name = self.config.minecraft.server_name
+                    await self.send_webhook_embed(
+                        None,
+                        self.EMBED_COLOR_BLUE,
+                        self.SERVER_ICON_URL,
+                        f"{server_name} is now online!",
+                    )
+                    self.last_status_notification = now
+                    logger.info("Server came online - sent notification")
+                else:
+                    logger.info("Server came online - notification skipped (cooldown)")
 
             messages = stats.get("messages", [])
             if messages:
                 await self.process_messages(messages)
         else:
-            self.server_online = False
+            self.consecutive_offline_checks += 1
 
-            if was_online:
-                server_name = self.config.minecraft.server_name
-                await self.send_webhook_embed(
-                    None,
-                    self.EMBED_COLOR_ORANGE,
-                    self.SERVER_ICON_URL,
-                    f"{server_name} is restarting...",
-                )
-                logger.info("Server went offline - sent notification")
+            # Only mark offline after threshold consecutive failures
+            if self.server_online and self.consecutive_offline_checks >= self.OFFLINE_THRESHOLD:
+                self.server_online = False
+                # Only notify if cooldown has passed
+                if now - self.last_status_notification >= self.STATUS_COOLDOWN:
+                    server_name = self.config.minecraft.server_name
+                    await self.send_webhook_embed(
+                        None,
+                        self.EMBED_COLOR_ORANGE,
+                        self.SERVER_ICON_URL,
+                        f"{server_name} is restarting...",
+                    )
+                    self.last_status_notification = now
+                    logger.info("Server went offline - sent notification")
+                else:
+                    logger.info("Server went offline - notification skipped (cooldown)")
 
     @poll_server_stats.before_loop
     async def before_poll_stats(self) -> None:

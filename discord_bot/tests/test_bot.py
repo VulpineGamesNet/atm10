@@ -413,20 +413,24 @@ class TestServerStatusDetection:
 
         assert bridge.server_online is True
         mock_embed.assert_called_once()
-        assert "online" in mock_embed.call_args[0][0].lower()
+        # author_name is the 4th argument (index 3)
+        assert "online" in mock_embed.call_args[0][3].lower()
 
     @pytest.mark.asyncio
     async def test_server_goes_offline(self, bridge):
-        """Test detection when server goes offline."""
+        """Test detection when server goes offline after threshold consecutive failures."""
         bridge.server_online = True
 
         with patch.object(bridge, "get_stats_via_rcon", new_callable=AsyncMock, return_value=None):
             with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
-                await bridge.poll_server_stats()
+                # Need OFFLINE_THRESHOLD (3) consecutive failures to trigger offline
+                for _ in range(bridge.OFFLINE_THRESHOLD):
+                    await bridge.poll_server_stats()
 
         assert bridge.server_online is False
         mock_embed.assert_called_once()
-        assert "restarting" in mock_embed.call_args[0][0].lower()
+        # author_name is the 4th argument (index 3)
+        assert "restarting" in mock_embed.call_args[0][3].lower()
 
     @pytest.mark.asyncio
     async def test_server_stays_online(self, bridge):
