@@ -548,45 +548,25 @@ class MinecraftBridge(commands.Cog):
         if player_count == 0:
             embed.description = "No players online"
         else:
-            # Build player list with avatars
-            # Players now contain {name, uuid} objects
+            # Build player list - players contain {name, uuid} objects
             player_lines = []
+            first_uuid = None
             for player in players:
                 if isinstance(player, dict):
                     name = player.get("name", "Unknown")
                     uuid = player.get("uuid", "")
+                    if not first_uuid and uuid:
+                        first_uuid = uuid
                 else:
                     # Fallback for old format (just string names)
                     name = str(player)
-                    uuid = ""
-                player_lines.append(f"**{name}**")
+                player_lines.append(f"• **{name}**")
 
             embed.description = "\n".join(player_lines)
 
-            # Set thumbnail to first player's avatar if available
-            if players:
-                first_player = players[0]
-                if isinstance(first_player, dict) and first_player.get("uuid"):
-                    embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{first_player['uuid']}/128")
-
-            # Add player avatars as a field if multiple players
-            if len(players) > 1:
-                avatar_links = []
-                for player in players[:10]:  # Limit to 10 to avoid embed limits
-                    if isinstance(player, dict):
-                        name = player.get("name", "Unknown")
-                        uuid = player.get("uuid", "")
-                        if uuid:
-                            avatar_links.append(f"[{name}](https://namemc.com/profile/{uuid})")
-                        else:
-                            avatar_links.append(name)
-                    else:
-                        avatar_links.append(str(player))
-
-                if len(players) > 10:
-                    avatar_links.append(f"*...and {len(players) - 10} more*")
-
-                embed.add_field(name="Player Profiles", value=" • ".join(avatar_links), inline=False)
+            # Set thumbnail to first player's avatar
+            if first_uuid:
+                embed.set_thumbnail(url=f"https://mc-heads.net/avatar/{first_uuid}/128")
 
         await interaction.response.send_message(embed=embed)
 
