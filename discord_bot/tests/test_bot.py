@@ -319,24 +319,29 @@ class TestMessageHandler:
         mock_rcon.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_on_message_adds_success_reaction(self, bridge, mock_message):
-        """Test that success reaction is added on successful relay."""
+    async def test_on_message_no_reaction_on_success(self, bridge, mock_message):
+        """Test that no reaction is added on successful relay."""
         with patch.object(
             bridge, "send_rcon_command", new_callable=AsyncMock, return_value="OK"
         ):
             await bridge.on_message(mock_message)
 
-        mock_message.add_reaction.assert_called_with("\u2705")
+        mock_message.add_reaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_on_message_adds_failure_reaction(self, bridge, mock_message):
-        """Test that failure reaction is added when relay fails."""
+    async def test_on_message_replies_on_failure(self, bridge, mock_message):
+        """Test that failure reply is sent when relay fails."""
+        mock_message.reply = AsyncMock()
         with patch.object(
             bridge, "send_rcon_command", new_callable=AsyncMock, return_value=None
         ):
             await bridge.on_message(mock_message)
 
-        mock_message.add_reaction.assert_called_with("\u274c")
+        mock_message.reply.assert_called_once()
+        call_kwargs = mock_message.reply.call_args.kwargs
+        assert call_kwargs["mention_author"] is False
+        embed = call_kwargs["embed"]
+        assert "not delivered" in embed.description.lower()
 
 
 class TestChannelTopicUpdate:

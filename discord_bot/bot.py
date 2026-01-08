@@ -343,12 +343,11 @@ class MinecraftBridge(commands.Cog):
         if result is None:
             logger.warning(f"Failed to relay message from {username}")
             try:
-                await message.add_reaction("\u274c")
-            except discord.Forbidden:
-                pass
-        else:
-            try:
-                await message.add_reaction("\u2705")
+                embed = discord.Embed(
+                    description=f"**Message was not delivered**\n> {message.content}",
+                    color=0xED4245,  # Red
+                )
+                await message.reply(embed=embed, mention_author=False)
             except discord.Forbidden:
                 pass
 
