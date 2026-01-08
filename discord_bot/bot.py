@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import signal
 import socket
 import struct
 import time
@@ -40,7 +41,9 @@ class MinecraftBridge(commands.Cog):
     EMBED_COLOR_RED = 0xED4245
     EMBED_COLOR_ORANGE = 0xE67E22
     EMBED_COLOR_BLUE = 0x3498DB
+    EMBED_COLOR_PURPLE = 0x9B59B6  # For bot status notifications
     SERVER_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
+    BOT_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
 
     # Debounce settings for status notifications
     STATUS_COOLDOWN: int = 30  # seconds between status notifications
@@ -232,6 +235,15 @@ class MinecraftBridge(commands.Cog):
         except Exception as e:
             logger.error(f"Webhook embed error: {e}")
             return False
+
+    async def send_bot_status(self, status: str, color: int) -> bool:
+        """Send bot status notification to Discord."""
+        return await self.send_webhook_embed(
+            None,
+            color,
+            self.BOT_ICON_URL,
+            status,
+        )
 
     async def process_messages(self, messages: list) -> None:
         """Process messages from KubeJS (chat, join, leave)."""
@@ -445,6 +457,7 @@ class DiscordMCBot(commands.Bot):
         )
 
         self.config = config
+        self._shutdown_notification_sent = False
 
     async def setup_hook(self) -> None:
         """Called when bot is starting up."""
@@ -461,6 +474,28 @@ class DiscordMCBot(commands.Bot):
             name=self.config.minecraft.server_name,
         )
         await self.change_presence(activity=activity)
+
+        # Send bot startup notification
+        bridge = self.get_cog("MinecraftBridge")
+        if bridge:
+            await bridge.send_bot_status(
+                "Discord bot started",
+                MinecraftBridge.EMBED_COLOR_PURPLE,
+            )
+            logger.info("Sent bot startup notification")
+
+    async def close(self) -> None:
+        """Called when bot is shutting down."""
+        if not self._shutdown_notification_sent:
+            self._shutdown_notification_sent = True
+            bridge = self.get_cog("MinecraftBridge")
+            if bridge:
+                await bridge.send_bot_status(
+                    "Discord bot stopped",
+                    MinecraftBridge.EMBED_COLOR_RED,
+                )
+                logger.info("Sent bot shutdown notification")
+        await super().close()
 
 
 def main() -> None:
