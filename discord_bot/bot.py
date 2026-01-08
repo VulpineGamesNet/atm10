@@ -521,15 +521,26 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    async def shutdown() -> None:
+        """Graceful shutdown coroutine."""
+        logger.info("Shutting down bot...")
+        await bot.close()
+        logger.info("Bot shutdown complete")
+
     def handle_signal(sig: signal.Signals) -> None:
-        logger.info(f"Received signal {sig.name}, shutting down...")
-        loop.create_task(bot.close())
+        logger.info(f"Received signal {sig.name}, initiating shutdown...")
+        # Stop the bot by cancelling the main task
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, handle_signal, sig)
 
     try:
         loop.run_until_complete(bot.start(config.discord.token))
+    except asyncio.CancelledError:
+        logger.info("Main task cancelled, running shutdown...")
+        loop.run_until_complete(shutdown())
     except discord.LoginFailure:
         logger.error("Invalid Discord token")
     except Exception as e:
