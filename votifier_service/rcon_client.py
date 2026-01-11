@@ -1,8 +1,9 @@
-"""RCON client for communicating with Minecraft server - socket-based, no signals."""
+"""RCON client for communicating with Minecraft server - persistent connection."""
 
 import logging
 import socket
 import struct
+from typing import Optional
 
 from config import RconConfig
 
@@ -13,7 +14,7 @@ RCON_SERVERDATA_EXECCOMMAND = 2
 
 
 class RconClient:
-    """Client for executing commands on Minecraft server via RCON."""
+    """Client for executing commands on Minecraft server via RCON with persistent connection."""
 
     def __init__(self, config: RconConfig) -> None:
         """
@@ -23,6 +24,8 @@ class RconClient:
             config: RCON configuration with host, port, and password
         """
         self.config = config
+        self._socket: Optional[socket.socket] = None
+        self._connected: bool = False
 
     def _send_packet(
         self, sock: socket.socket, packet_id: int, packet_type: int, payload: str
@@ -53,9 +56,57 @@ class RconClient:
 
         return packet_id, packet_type, payload
 
+    def _connect(self) -> bool:
+        """Establish persistent RCON connection with authentication."""
+        self._disconnect()
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
+            sock.connect((self.config.host, self.config.port))
+
+            self._send_packet(sock, 1, RCON_SERVERDATA_AUTH, self.config.password)
+            packet_id, _, _ = self._recv_packet(sock)
+
+            if packet_id == -1:
+                logger.error("RCON authentication failed - check password")
+                sock.close()
+                return False
+
+            sock.settimeout(30.0)
+            self._socket = sock
+            self._connected = True
+            logger.info("RCON connection established")
+            return True
+
+        except ConnectionRefusedError:
+            logger.debug("RCON connection refused - server may be starting")
+            return False
+        except socket.timeout:
+            logger.warning("RCON connection timed out")
+            return False
+        except OSError as e:
+            logger.debug(f"RCON connection error: {e}")
+            return False
+
+    def _disconnect(self) -> None:
+        """Close RCON connection cleanly."""
+        if self._socket:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+            self._socket = None
+        self._connected = False
+
+    def close(self) -> None:
+        """Close the RCON connection (public interface for cleanup)."""
+        self._disconnect()
+        logger.debug("RCON client closed")
+
     def execute(self, command: str) -> str:
         """
-        Execute a command on the Minecraft server.
+        Execute a command on the Minecraft server using persistent connection.
 
         Args:
             command: The command to execute (without leading /)
@@ -64,34 +115,24 @@ class RconClient:
             Server response string
 
         Raises:
-            Exception: If connection or command execution fails
+            ConnectionError: If connection or command execution fails
         """
         logger.debug(f"Executing RCON command: {command}")
 
+        if not self._connected:
+            if not self._connect():
+                raise ConnectionError("Failed to connect to RCON")
+
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10.0)
-            sock.connect((self.config.host, self.config.port))
-
-            # Authenticate
-            self._send_packet(sock, 1, RCON_SERVERDATA_AUTH, self.config.password)
-            packet_id, _, _ = self._recv_packet(sock)
-
-            if packet_id == -1:
-                sock.close()
-                raise ConnectionError("RCON authentication failed - check password")
-
-            # Send command
-            self._send_packet(sock, 2, RCON_SERVERDATA_EXECCOMMAND, command)
-            _, _, response = self._recv_packet(sock)
-
-            sock.close()
+            self._send_packet(self._socket, 2, RCON_SERVERDATA_EXECCOMMAND, command)
+            _, _, response = self._recv_packet(self._socket)
             logger.debug(f"RCON response: {response}")
             return response
 
-        except Exception as e:
-            logger.error(f"RCON command failed: {e}")
-            raise
+        except (socket.timeout, socket.error, ConnectionError, BrokenPipeError, OSError) as e:
+            logger.warning(f"RCON command failed, connection lost: {e}")
+            self._disconnect()
+            raise ConnectionError(f"RCON disconnected: {e}")
 
     def process_vote(self, username: str, service: str) -> str:
         """

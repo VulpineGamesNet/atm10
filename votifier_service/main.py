@@ -8,7 +8,7 @@ import threading
 from typing import Optional
 
 from config import Config, load_config
-from pending_rewards import pending_store
+from pending_rewards import pending_store, vote_dedup
 from rcon_client import RconClient
 from votifier_protocol import VotifierProtocol
 
@@ -78,6 +78,7 @@ class VotifierServer:
             except Exception:
                 pass
             self._server_socket = None
+        self.rcon.close()
         logger.info("Votifier server stopped")
 
     def _accept_connections(self) -> None:
@@ -135,6 +136,16 @@ class VotifierServer:
             try:
                 vote = self.protocol.process_vote_block(encrypted_block)
                 logger.info(f"Received vote: {vote}")
+
+                # Check for duplicate vote (1-hour dedup window)
+                if vote_dedup.is_duplicate(vote.username, vote.service_name):
+                    logger.info(
+                        f"Duplicate vote rejected: {vote.username} for {vote.service_name}"
+                    )
+                    return
+
+                # Mark vote as processed
+                vote_dedup.mark_processed(vote.username, vote.service_name)
 
                 # Send vote to Minecraft via RCON
                 try:

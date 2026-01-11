@@ -5,11 +5,11 @@
 // CONFIGURATION
 // ============================================================================
 
-const ROOT_KEY = "kubevote"
+const VOTE_ROOT_KEY = "kubevote"
 
 // Voting sites configuration
 // id: must match the service name sent by voting sites
-// cooldown: milliseconds (86400000 = 24 hours)
+// cooldown: display cooldown in milliseconds (86400000 = 24 hours) - for UI only
 const VOTING_SITES = [
   {
     id: "planetminecraft",
@@ -27,6 +27,12 @@ const VOTING_SITES = [
     id: "topg",
     name: "TopG",
     url: "https://topg.org/minecraft-servers/vote/your-server",
+    cooldown: 86400000
+  },
+  {
+    id: "minestatus.net_test_vote",
+    name: "MineStatus Test",
+    url: "https://minestatus.net/",
     cooldown: 86400000
   }
   // Add more voting sites as needed
@@ -139,10 +145,10 @@ function markRewardsClaimed(username) {
 }
 
 function getRootNbt(server) {
-  if (!server.persistentData.contains(ROOT_KEY)) {
-    server.persistentData.put(ROOT_KEY, NBT.compoundTag())
+  if (!server.persistentData.contains(VOTE_ROOT_KEY)) {
+    server.persistentData.put(VOTE_ROOT_KEY, NBT.compoundTag())
   }
-  return server.persistentData.getCompound(ROOT_KEY)
+  return server.persistentData.getCompound(VOTE_ROOT_KEY)
 }
 
 function ensureDataLoaded(server) {
@@ -203,7 +209,7 @@ function savePlayerVoteData(server, uuid) {
 
   if (!data) return
 
-  // Save lastVotes
+  // Save lastVotes (for display purposes)
   let lastVotesNbt = NBT.compoundTag()
   for (let siteId in data.lastVotes) {
     lastVotesNbt.putLong(siteId, data.lastVotes[siteId])
@@ -333,13 +339,13 @@ function getStreakMultiplier(streakCount) {
 }
 
 function createCoinItem(coinConfig, count) {
-  let item = Item.of(coinConfig.id, count)
-  item.setNbt({
-    custom_model_data: coinConfig.customModelData,
-    custom_name: coinConfig.name,
-    lore: [coinConfig.lore]
-  })
-  return item
+  // Use 1.21 component syntax
+  let itemString = coinConfig.id + '[' +
+    'minecraft:custom_model_data=' + coinConfig.customModelData + ',' +
+    'minecraft:custom_name=\'' + coinConfig.name + '\',' +
+    'minecraft:lore=[\'' + coinConfig.lore + '\']' +
+    ']'
+  return Item.of(itemString).withCount(count)
 }
 
 function calculateCoinReward(multiplier) {
@@ -370,6 +376,17 @@ function giveCoinsToPlayer(player, coins100, coins50) {
     let item50 = createCoinItem(COIN_50, coins50)
     player.give(item50)
   }
+  // Play reward sound
+  playRewardSound(player)
+}
+
+function playRewardSound(player) {
+  // Play a sparkly/sprinkling sound effect
+  player.playSound("minecraft:block.amethyst_block.chime", "players", 1.0, 1.0)
+  // Add a second sound for more sparkle effect
+  player.server.scheduleInTicks(3, () => {
+    player.playSound("minecraft:entity.experience_orb.pickup", "players", 0.5, 1.2)
+  })
 }
 
 function formatCoinReward(coins100, coins50) {
@@ -429,21 +446,12 @@ function processVote(server, username, serviceId) {
   }
 
   let data = ensurePlayerData(uuid)
-  let now = Date.now()
   let today = getCurrentDateString()
   let yesterday = getYesterdayDateString()
   let currentMonth = getCurrentMonthString()
 
-  // Check cooldown
-  let lastVote = data.lastVotes[site.id] || 0
-  if (now - lastVote < site.cooldown) {
-    let remaining = site.cooldown - (now - lastVote)
-    console.info("[KubeVote] Vote from " + playerName + " for " + site.id + " rejected (cooldown: " + formatTimeRemaining(remaining) + ")")
-    return { success: false, message: "Still on cooldown" }
-  }
-
-  // Update last vote time
-  data.lastVotes[site.id] = now
+  // Update last vote time (for display purposes only)
+  data.lastVotes[site.id] = Date.now()
 
   // Update streak
   if (data.streak.lastDate === yesterday) {
@@ -476,14 +484,18 @@ function processVote(server, username, serviceId) {
   if (player) {
     giveCoinsToPlayer(player, coinReward.coins100, coinReward.coins50)
   } else {
-    // Player offline - use give commands to queue the items
+    // Player offline - use give commands with 1.21 component syntax
     if (coinReward.coins100 > 0) {
-      let nbt100 = '{custom_model_data:' + COIN_100.customModelData + ',custom_name:\'' + COIN_100.name + '\',lore:[\'' + COIN_100.lore + '\']}'
-      server.runCommandSilent("give " + playerName + " " + COIN_100.id + "[" + nbt100 + "] " + coinReward.coins100)
+      let components100 = 'minecraft:custom_model_data=' + COIN_100.customModelData +
+        ',minecraft:custom_name=\'' + COIN_100.name + '\'' +
+        ',minecraft:lore=[\'' + COIN_100.lore + '\']'
+      server.runCommandSilent("give " + playerName + " " + COIN_100.id + "[" + components100 + "] " + coinReward.coins100)
     }
     if (coinReward.coins50 > 0) {
-      let nbt50 = '{custom_model_data:' + COIN_50.customModelData + ',custom_name:\'' + COIN_50.name + '\',lore:[\'' + COIN_50.lore + '\']}'
-      server.runCommandSilent("give " + playerName + " " + COIN_50.id + "[" + nbt50 + "] " + coinReward.coins50)
+      let components50 = 'minecraft:custom_model_data=' + COIN_50.customModelData +
+        ',minecraft:custom_name=\'' + COIN_50.name + '\'' +
+        ',minecraft:lore=[\'' + COIN_50.lore + '\']'
+      server.runCommandSilent("give " + playerName + " " + COIN_50.id + "[" + components50 + "] " + coinReward.coins50)
     }
   }
 
@@ -585,7 +597,7 @@ ServerEvents.commandRegistry(event => {
 
         src.sendSystemMessage(Component.gold("============ Vote for Rewards! ============"))
 
-        // Show each voting site
+        // Show each voting site with cooldown status
         for (let i = 0; i < VOTING_SITES.length; i++) {
           let site = VOTING_SITES[i]
           let lastVote = data.lastVotes[site.id] || 0

@@ -83,12 +83,28 @@ def env_vars():
 
 
 @pytest.fixture
-def mock_mcrcon(mocker):
-    """Mock the MCRcon class."""
-    mock_mcr = MagicMock()
-    mock_mcr.__enter__ = MagicMock(return_value=mock_mcr)
-    mock_mcr.__exit__ = MagicMock(return_value=False)
-    mock_mcr.command = MagicMock(return_value="Command executed")
+def mock_rcon_socket(mocker):
+    """Mock socket for RCON client tests."""
+    import struct
 
-    mock_class = mocker.patch("rcon_client.MCRcon", return_value=mock_mcr)
-    return mock_class, mock_mcr
+    mock_sock = MagicMock()
+
+    def create_response(packet_id: int, response: str) -> bytes:
+        """Create an RCON response packet."""
+        payload = response.encode("utf-8") + b"\x00\x00"
+        packet = struct.pack("<ii", packet_id, 0) + payload
+        return struct.pack("<i", len(packet)) + packet
+
+    # Default: successful auth (packet_id=1) and command response
+    auth_response = create_response(1, "")
+    command_response = create_response(2, "Command executed")
+
+    mock_sock.recv.side_effect = [
+        auth_response[:4],  # Auth length
+        auth_response[4:],  # Auth data
+        command_response[:4],  # Command length
+        command_response[4:],  # Command data
+    ]
+
+    mock_socket_class = mocker.patch("rcon_client.socket.socket", return_value=mock_sock)
+    return mock_socket_class, mock_sock, create_response

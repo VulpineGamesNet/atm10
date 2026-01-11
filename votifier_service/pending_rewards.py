@@ -1,13 +1,12 @@
-"""Pending rewards storage for offline players."""
+"""Pending rewards storage for offline players and vote deduplication."""
 
 import json
 import logging
-import os
 import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -122,5 +121,38 @@ class PendingRewardsStore:
             ]
 
 
-# Global instance
+class VoteDeduplication:
+    """Track recent votes to prevent duplicates within 1-hour window."""
+
+    DEDUP_WINDOW_SECONDS = 3600  # 1 hour
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._votes: dict[str, float] = {}  # "username:service" -> timestamp
+
+    def _make_key(self, username: str, service: str) -> str:
+        return f"{username.lower()}:{service.lower()}"
+
+    def is_duplicate(self, username: str, service: str) -> bool:
+        """Check if vote is a duplicate within the dedup window."""
+        key = self._make_key(username, service)
+        now = time.time()
+        with self._lock:
+            self._cleanup_old_entries(now)
+            return key in self._votes
+
+    def mark_processed(self, username: str, service: str) -> None:
+        """Mark a vote as processed."""
+        key = self._make_key(username, service)
+        with self._lock:
+            self._votes[key] = time.time()
+
+    def _cleanup_old_entries(self, now: float) -> None:
+        """Remove entries older than dedup window."""
+        cutoff = now - self.DEDUP_WINDOW_SECONDS
+        self._votes = {k: v for k, v in self._votes.items() if v > cutoff}
+
+
+# Global instances
 pending_store = PendingRewardsStore()
+vote_dedup = VoteDeduplication()
