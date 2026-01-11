@@ -356,34 +356,14 @@ function processVote(server, username, serviceId) {
 
   // Find player by username
   let player = server.getPlayer(username)
-  let uuid = null
-  let playerName = username
-
-  if (player) {
-    uuid = player.getStringUuid()
-    playerName = player.getName().getString()
-  } else {
-    // Try to find UUID from profile cache for offline players
-    try {
-      let profileCache = server.getProfileCache()
-      if (profileCache) {
-        let optProfile = profileCache.getAsync(username)
-        if (optProfile && optProfile.join) {
-          let profile = optProfile.join()
-          if (profile) {
-            uuid = profile.getId().toString()
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("[KubeVote] Could not find UUID for " + username + ": " + e)
-    }
-  }
-
-  if (!uuid) {
-    console.warn("[KubeVote] Cannot process vote - player not found: " + username)
+  if (!player) {
+    // Player offline - votifier service will save as pending reward
+    console.info("[KubeVote] Player " + username + " is offline, vote saved as pending")
     return { success: false, message: "Player not found" }
   }
+
+  let uuid = player.getStringUuid()
+  let playerName = player.getName().getString()
 
   let site = getSiteById(serviceId)
   if (!site) {
@@ -428,74 +408,50 @@ function processVote(server, username, serviceId) {
   saveLeaderboard(server)
 
   // Give reward - physical coins
-  if (player) {
-    giveCoinsToPlayer(player, coinReward.coins100, coinReward.coins50)
-  } else {
-    // Player offline - use give commands with 1.21 component syntax
-    if (coinReward.coins100 > 0) {
-      let components100 = 'minecraft:custom_model_data=' + COIN_100.customModelData +
-        ',minecraft:custom_name=\'' + COIN_100.name + '\'' +
-        ',minecraft:lore=[\'' + COIN_100.lore + '\']'
-      server.runCommandSilent("give " + playerName + " " + COIN_100.id + "[" + components100 + "] " + coinReward.coins100)
-    }
-    if (coinReward.coins50 > 0) {
-      let components50 = 'minecraft:custom_model_data=' + COIN_50.customModelData +
-        ',minecraft:custom_name=\'' + COIN_50.name + '\'' +
-        ',minecraft:lore=[\'' + COIN_50.lore + '\']'
-      server.runCommandSilent("give " + playerName + " " + COIN_50.id + "[" + components50 + "] " + coinReward.coins50)
-    }
+  giveCoinsToPlayer(player, coinReward.coins100, coinReward.coins50)
+
+  // Notify player
+  player.tell(Component.gold("★ ").append(Component.yellow("Vote Reward")).append(Component.gold(" ★")))
+  player.tell(
+    Component.gray("  Thanks for voting on ")
+      .append(Component.aqua(site.name))
+      .append(Component.gray("!"))
+  )
+
+  // Reward breakdown
+  let rewardMsg = Component.gray("  You received: ")
+  if (coinReward.coins100 > 0) {
+    rewardMsg.append(Component.blue(coinReward.coins100 + "x "))
+      .append(Component.gold("$100 Coin"))
   }
-
-  // Notify player if online with pretty message
-  if (player) {
-    // Header line
-    player.tell(Component.gold("★ ").append(Component.yellow("Vote Reward")).append(Component.gold(" ★")))
-
-    // Thanks message
-    player.tell(
-      Component.gray("  Thanks for voting on ")
-        .append(Component.aqua(site.name))
-        .append(Component.gray("!"))
-    )
-
-    // Reward breakdown
-    let rewardMsg = Component.gray("  You received: ")
-    if (coinReward.coins100 > 0) {
-      rewardMsg.append(Component.blue(coinReward.coins100 + "x "))
-        .append(Component.gold("$100 Coin"))
-    }
-    if (coinReward.coins100 > 0 && coinReward.coins50 > 0) {
-      rewardMsg.append(Component.gray(" + "))
-    }
-    if (coinReward.coins50 > 0) {
-      rewardMsg.append(Component.green(coinReward.coins50 + "x "))
-        .append(Component.darkGreen("$50 Coin"))
-    }
-    player.tell(rewardMsg)
-
-    // Total value
-    player.tell(
-      Component.gray("  Total: ")
-        .append(Component.green("$" + coinReward.totalValue))
-    )
-
-    // Streak info with bonus indicator
-    let streakLine = Component.gray("  Streak: ")
-      .append(Component.yellow(data.streak.count + " day" + (data.streak.count !== 1 ? "s" : "")))
-
-    if (streakInfo.name) {
-      streakLine.append(Component.gray(" ("))
-        .append(Component.aqua(streakInfo.name))
-        .append(Component.gray(")"))
-    }
-    player.tell(streakLine)
-
-    // Total votes
-    player.tell(
-      Component.gray("  Lifetime votes: ")
-        .append(Component.yellow(data.totalVotes.toString()))
-    )
+  if (coinReward.coins100 > 0 && coinReward.coins50 > 0) {
+    rewardMsg.append(Component.gray(" + "))
   }
+  if (coinReward.coins50 > 0) {
+    rewardMsg.append(Component.green(coinReward.coins50 + "x "))
+      .append(Component.darkGreen("$50 Coin"))
+  }
+  player.tell(rewardMsg)
+
+  player.tell(
+    Component.gray("  Total: ")
+      .append(Component.green("$" + coinReward.totalValue))
+  )
+
+  // Streak info
+  let streakLine = Component.gray("  Streak: ")
+    .append(Component.yellow(data.streak.count + " day" + (data.streak.count !== 1 ? "s" : "")))
+  if (streakInfo.name) {
+    streakLine.append(Component.gray(" ("))
+      .append(Component.aqua(streakInfo.name))
+      .append(Component.gray(")"))
+  }
+  player.tell(streakLine)
+
+  player.tell(
+    Component.gray("  Lifetime votes: ")
+      .append(Component.yellow(data.totalVotes.toString()))
+  )
 
   let coinDisplay = formatCoinReward(coinReward.coins100, coinReward.coins50)
   console.info("[KubeVote] Processed vote from " + playerName + " for " + site.name + " - reward: " + coinDisplay + " ($" + coinReward.totalValue + ") (streak: " + data.streak.count + ")")

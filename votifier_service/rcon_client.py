@@ -104,12 +104,13 @@ class RconClient:
         self._disconnect()
         logger.debug("RCON client closed")
 
-    def execute(self, command: str) -> str:
+    def execute(self, command: str, timeout: Optional[float] = None) -> str:
         """
         Execute a command on the Minecraft server using persistent connection.
 
         Args:
             command: The command to execute (without leading /)
+            timeout: Optional timeout in seconds for this command
 
         Returns:
             Server response string
@@ -124,9 +125,18 @@ class RconClient:
                 raise ConnectionError("Failed to connect to RCON")
 
         try:
+            # Set custom timeout if specified
+            if timeout and self._socket:
+                self._socket.settimeout(timeout)
+
             self._send_packet(self._socket, 2, RCON_SERVERDATA_EXECCOMMAND, command)
             _, _, response = self._recv_packet(self._socket)
             logger.debug(f"RCON response: {response}")
+
+            # Reset to default timeout
+            if timeout and self._socket:
+                self._socket.settimeout(30.0)
+
             return response
 
         except (socket.timeout, socket.error, ConnectionError, BrokenPipeError, OSError) as e:
@@ -162,7 +172,7 @@ class RconClient:
             Server response
         """
         command = f"kubevote claim {username} {count}"
-        return self.execute(command)
+        return self.execute(command, timeout=10.0)
 
     def test_connection(self) -> bool:
         """
