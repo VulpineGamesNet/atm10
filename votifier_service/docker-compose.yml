@@ -9,6 +9,8 @@ services:
       - .env
     volumes:
       - ./keys:/app/keys
+      # Mount data to Minecraft server for KubeJS access
+      - /var/lib/pterodactyl/volumes/284c8202-2eb5-4ba2-b7b9-519145422945/kubejs/server_data/votifier:/app/data
     networks:
       - pterodactyl_nw
 

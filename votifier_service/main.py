@@ -8,6 +8,7 @@ import threading
 from typing import Optional
 
 from config import Config, load_config
+from pending_rewards import pending_store
 from rcon_client import RconClient
 from votifier_protocol import VotifierProtocol
 
@@ -139,8 +140,16 @@ class VotifierServer:
                 try:
                     response = self.rcon.process_vote(vote.username, vote.service_name)
                     logger.info(f"RCON response: {response}")
+
+                    # Check if player was offline (response indicates failure)
+                    if "not found" in response.lower() or "no player" in response.lower():
+                        logger.info(f"Player {vote.username} is offline, saving pending reward")
+                        pending_store.add_pending(vote.username, vote.service_name)
                 except Exception as e:
                     logger.error(f"Failed to process vote via RCON: {e}")
+                    # Save as pending reward on RCON failure
+                    logger.info(f"Saving pending reward for {vote.username} due to RCON failure")
+                    pending_store.add_pending(vote.username, vote.service_name)
 
             except ValueError as e:
                 logger.error(f"Failed to process vote from {client_address}: {e}")

@@ -67,6 +67,77 @@ let voteDataCache = {}
 let leaderboardCache = { month: "", votes: {} }
 let dataLoaded = false
 
+// Path to pending rewards file from votifier service
+const PENDING_REWARDS_PATH = "kubejs/server_data/votifier/pending_rewards.json"
+
+/**
+ * Read pending rewards for a player from the votifier data file
+ */
+function getPendingRewards(username) {
+  try {
+    let File = Java.loadClass("java.io.File")
+    let Files = Java.loadClass("java.nio.file.Files")
+    let Paths = Java.loadClass("java.nio.file.Paths")
+
+    let file = new File(PENDING_REWARDS_PATH)
+    if (!file.exists()) {
+      return []
+    }
+
+    let content = new java.lang.String(Files.readAllBytes(Paths.get(PENDING_REWARDS_PATH)))
+    let data = JSON.parse(content)
+
+    let usernameLower = username.toLowerCase()
+    if (!data[usernameLower]) {
+      return []
+    }
+
+    // Return only unclaimed rewards
+    return data[usernameLower].filter(function(r) { return !r.claimed })
+  } catch (e) {
+    console.warn("[KubeVote] Failed to read pending rewards: " + e)
+    return []
+  }
+}
+
+/**
+ * Mark all pending rewards as claimed for a player
+ */
+function markRewardsClaimed(username) {
+  try {
+    let File = Java.loadClass("java.io.File")
+    let Files = Java.loadClass("java.nio.file.Files")
+    let Paths = Java.loadClass("java.nio.file.Paths")
+    let StandardCharsets = Java.loadClass("java.nio.charset.StandardCharsets")
+
+    let file = new File(PENDING_REWARDS_PATH)
+    if (!file.exists()) {
+      return
+    }
+
+    let content = new java.lang.String(Files.readAllBytes(Paths.get(PENDING_REWARDS_PATH)))
+    let data = JSON.parse(content)
+
+    let usernameLower = username.toLowerCase()
+    if (!data[usernameLower]) {
+      return
+    }
+
+    // Mark all rewards as claimed
+    for (let i = 0; i < data[usernameLower].length; i++) {
+      data[usernameLower][i].claimed = true
+    }
+
+    // Write back
+    let jsonStr = JSON.stringify(data, null, 2)
+    Files.write(Paths.get(PENDING_REWARDS_PATH), jsonStr.getBytes(StandardCharsets.UTF_8))
+
+    console.info("[KubeVote] Marked rewards as claimed for " + username)
+  } catch (e) {
+    console.warn("[KubeVote] Failed to mark rewards as claimed: " + e)
+  }
+}
+
 function getRootNbt(server) {
   if (!server.persistentData.contains(ROOT_KEY)) {
     server.persistentData.put(ROOT_KEY, NBT.compoundTag())
@@ -672,6 +743,88 @@ ServerEvents.commandRegistry(event => {
 
             src.sendSystemMessage(msg)
           }
+
+          return 1
+        })
+      )
+
+      // /vote reward - Claim pending offline rewards
+      .then(Commands.literal("reward")
+        .executes(ctx => {
+          let src = ctx.getSource()
+          let player = src.getPlayer()
+
+          if (!player) {
+            src.sendFailure(Component.red("This command can only be used by players"))
+            return 0
+          }
+
+          let server = src.getServer()
+          let username = player.getName().getString()
+
+          // Read pending rewards from votifier data file
+          let pendingRewards = getPendingRewards(username)
+
+          if (pendingRewards.length === 0) {
+            src.sendSystemMessage(Component.yellow("You have no pending vote rewards."))
+            return 1
+          }
+
+          // Process each pending reward
+          let totalCoins100 = 0
+          let totalCoins50 = 0
+          let processedCount = 0
+
+          for (let i = 0; i < pendingRewards.length; i++) {
+            let reward = pendingRewards[i]
+            if (reward.claimed) continue
+
+            // Calculate reward (base reward without streak for offline votes)
+            let coinReward = calculateCoinReward(1.0)
+            totalCoins100 += coinReward.coins100
+            totalCoins50 += coinReward.coins50
+            processedCount++
+          }
+
+          if (processedCount === 0) {
+            src.sendSystemMessage(Component.yellow("You have no unclaimed vote rewards."))
+            return 1
+          }
+
+          // Give the coins
+          giveCoinsToPlayer(player, totalCoins100, totalCoins50)
+
+          // Mark rewards as claimed
+          markRewardsClaimed(username)
+
+          // Notify player
+          let totalValue = (totalCoins100 * 100) + (totalCoins50 * 50)
+          src.sendSystemMessage(Component.gold("★ ").append(Component.yellow("Pending Rewards Claimed")).append(Component.gold(" ★")))
+          src.sendSystemMessage(
+            Component.gray("  Claimed ")
+              .append(Component.green(processedCount.toString()))
+              .append(Component.gray(" pending vote reward" + (processedCount !== 1 ? "s" : "") + "!"))
+          )
+
+          let rewardMsg = Component.gray("  You received: ")
+          if (totalCoins100 > 0) {
+            rewardMsg.append(Component.blue(totalCoins100 + "x "))
+              .append(Component.gold("$100 Coin"))
+          }
+          if (totalCoins100 > 0 && totalCoins50 > 0) {
+            rewardMsg.append(Component.gray(" + "))
+          }
+          if (totalCoins50 > 0) {
+            rewardMsg.append(Component.green(totalCoins50 + "x "))
+              .append(Component.darkGreen("$50 Coin"))
+          }
+          src.sendSystemMessage(rewardMsg)
+          src.sendSystemMessage(
+            Component.gray("  Total: ")
+              .append(Component.green("$" + totalValue))
+          )
+
+          console.info("[KubeVote] " + username + " claimed " + processedCount + " pending rewards ($" + totalValue + ")")
 
           return 1
         })
