@@ -41,6 +41,7 @@ class RconClient:
                 host=self.config.host,
                 password=self.config.password,
                 port=self.config.port,
+                timeout=None,  # Disable signal-based timeout for thread safety
             ) as mcr:
                 response = mcr.command(command)
                 logger.debug(f"RCON response: {response}")
