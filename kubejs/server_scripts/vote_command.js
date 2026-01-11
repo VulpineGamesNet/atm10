@@ -12,21 +12,39 @@ const VOTE_ROOT_KEY = "kubevote"
 // cooldown: display cooldown in milliseconds (86400000 = 24 hours) - for UI only
 const VOTING_SITES = [
   {
-    id: "planetminecraft",
-    name: "Planet Minecraft",
-    url: "https://www.planetminecraft.com/server/your-server/vote/",
+    id: "moddedminecraftservers.com",
+    name: "Modded MC Servers",
+    url: "https://moddedminecraftservers.com/server/vulpine-all-the-mods-10.60869/",
     cooldown: 86400000
   },
   {
-    id: "minecraftservers",
+    id: "minecraftservers.org",
     name: "Minecraft Servers",
-    url: "https://minecraftservers.org/vote/your-server",
+    url: "https://minecraftservers.org/server/681945",
     cooldown: 86400000
   },
   {
-    id: "topg",
+    id: "minecraft-mp.com",
+    name: "Minecraft MP",
+    url: "https://minecraft-mp.com/server-s352488",
+    cooldown: 86400000
+  },
+  {
+    id: "planetminecraft.com",
+    name: "Planet Minecraft",
+    url: "https://www.planetminecraft.com/server/vulpine-atm10/",
+    cooldown: 86400000
+  },
+  {
+    id: "minecraft-server-list.com",
+    name: "MC Server List",
+    url: "https://minecraft-server-list.com/server/516945/",
+    cooldown: 86400000
+  },
+  {
+    id: "topg.org",
     name: "TopG",
-    url: "https://topg.org/minecraft-servers/vote/your-server",
+    url: "https://topg.org/minecraft-servers/server-678506",
     cooldown: 86400000
   },
   {
@@ -35,7 +53,6 @@ const VOTING_SITES = [
     url: "https://minestatus.net/",
     cooldown: 86400000
   }
-  // Add more voting sites as needed
 ]
 
 // Reward configuration - Physical coins (gold_nugget with custom_model_data)
@@ -72,77 +89,7 @@ const COIN_50 = {
 let voteDataCache = {}
 let leaderboardCache = { month: "", votes: {} }
 let dataLoaded = false
-
-// Path to pending rewards file from votifier service
-const PENDING_REWARDS_PATH = "kubejs/server_data/votifier/pending_rewards.json"
-
-/**
- * Read pending rewards for a player from the votifier data file
- */
-function getPendingRewards(username) {
-  try {
-    let File = Java.loadClass("java.io.File")
-    let Files = Java.loadClass("java.nio.file.Files")
-    let Paths = Java.loadClass("java.nio.file.Paths")
-
-    let file = new File(PENDING_REWARDS_PATH)
-    if (!file.exists()) {
-      return []
-    }
-
-    let content = new java.lang.String(Files.readAllBytes(Paths.get(PENDING_REWARDS_PATH)))
-    let data = JSON.parse(content)
-
-    let usernameLower = username.toLowerCase()
-    if (!data[usernameLower]) {
-      return []
-    }
-
-    // Return only unclaimed rewards
-    return data[usernameLower].filter(function(r) { return !r.claimed })
-  } catch (e) {
-    console.warn("[KubeVote] Failed to read pending rewards: " + e)
-    return []
-  }
-}
-
-/**
- * Mark all pending rewards as claimed for a player
- */
-function markRewardsClaimed(username) {
-  try {
-    let File = Java.loadClass("java.io.File")
-    let Files = Java.loadClass("java.nio.file.Files")
-    let Paths = Java.loadClass("java.nio.file.Paths")
-    let StandardCharsets = Java.loadClass("java.nio.charset.StandardCharsets")
-
-    let file = new File(PENDING_REWARDS_PATH)
-    if (!file.exists()) {
-      return
-    }
-
-    let content = new java.lang.String(Files.readAllBytes(Paths.get(PENDING_REWARDS_PATH)))
-    let data = JSON.parse(content)
-
-    let usernameLower = username.toLowerCase()
-    if (!data[usernameLower]) {
-      return
-    }
-
-    // Mark all rewards as claimed
-    for (let i = 0; i < data[usernameLower].length; i++) {
-      data[usernameLower][i].claimed = true
-    }
-
-    // Write back
-    let jsonStr = JSON.stringify(data, null, 2)
-    Files.write(Paths.get(PENDING_REWARDS_PATH), jsonStr.getBytes(StandardCharsets.UTF_8))
-
-    console.info("[KubeVote] Marked rewards as claimed for " + username)
-  } catch (e) {
-    console.warn("[KubeVote] Failed to mark rewards as claimed: " + e)
-  }
-}
+let claimQueue = []  // Queue for pending claim requests
 
 function getRootNbt(server) {
   if (!server.persistentData.contains(VOTE_ROOT_KEY)) {
@@ -381,11 +328,11 @@ function giveCoinsToPlayer(player, coins100, coins50) {
 }
 
 function playRewardSound(player) {
-  // Play a sparkly/sprinkling sound effect
-  player.playSound("minecraft:block.amethyst_block.chime", "players", 1.0, 1.0)
+  // Play a sparkly/sprinkling sound effect using playsound command
+  player.server.runCommandSilent("playsound minecraft:block.amethyst_block.chime player " + player.getName().getString() + " ~ ~ ~ 1.0 1.0")
   // Add a second sound for more sparkle effect
   player.server.scheduleInTicks(3, () => {
-    player.playSound("minecraft:entity.experience_orb.pickup", "players", 0.5, 1.2)
+    player.server.runCommandSilent("playsound minecraft:entity.experience_orb.pickup player " + player.getName().getString() + " ~ ~ ~ 0.5 1.2")
   })
 }
 
@@ -760,8 +707,8 @@ ServerEvents.commandRegistry(event => {
         })
       )
 
-      // /vote reward - Claim pending offline rewards
-      .then(Commands.literal("reward")
+      // /vote claim - Request pending rewards (votifier service handles actual claim)
+      .then(Commands.literal("claim")
         .executes(ctx => {
           let src = ctx.getSource()
           let player = src.getPlayer()
@@ -771,72 +718,12 @@ ServerEvents.commandRegistry(event => {
             return 0
           }
 
-          let server = src.getServer()
           let username = player.getName().getString()
-
-          // Read pending rewards from votifier data file
-          let pendingRewards = getPendingRewards(username)
-
-          if (pendingRewards.length === 0) {
-            src.sendSystemMessage(Component.yellow("You have no pending vote rewards."))
-            return 1
+          // Add to claim queue for votifier service to poll
+          if (claimQueue.indexOf(username) === -1) {
+            claimQueue.push(username)
           }
-
-          // Process each pending reward
-          let totalCoins100 = 0
-          let totalCoins50 = 0
-          let processedCount = 0
-
-          for (let i = 0; i < pendingRewards.length; i++) {
-            let reward = pendingRewards[i]
-            if (reward.claimed) continue
-
-            // Calculate reward (base reward without streak for offline votes)
-            let coinReward = calculateCoinReward(1.0)
-            totalCoins100 += coinReward.coins100
-            totalCoins50 += coinReward.coins50
-            processedCount++
-          }
-
-          if (processedCount === 0) {
-            src.sendSystemMessage(Component.yellow("You have no unclaimed vote rewards."))
-            return 1
-          }
-
-          // Give the coins
-          giveCoinsToPlayer(player, totalCoins100, totalCoins50)
-
-          // Mark rewards as claimed
-          markRewardsClaimed(username)
-
-          // Notify player
-          let totalValue = (totalCoins100 * 100) + (totalCoins50 * 50)
-          src.sendSystemMessage(Component.gold("★ ").append(Component.yellow("Pending Rewards Claimed")).append(Component.gold(" ★")))
-          src.sendSystemMessage(
-            Component.gray("  Claimed ")
-              .append(Component.green(processedCount.toString()))
-              .append(Component.gray(" pending vote reward" + (processedCount !== 1 ? "s" : "") + "!"))
-          )
-
-          let rewardMsg = Component.gray("  You received: ")
-          if (totalCoins100 > 0) {
-            rewardMsg.append(Component.blue(totalCoins100 + "x "))
-              .append(Component.gold("$100 Coin"))
-          }
-          if (totalCoins100 > 0 && totalCoins50 > 0) {
-            rewardMsg.append(Component.gray(" + "))
-          }
-          if (totalCoins50 > 0) {
-            rewardMsg.append(Component.green(totalCoins50 + "x "))
-              .append(Component.darkGreen("$50 Coin"))
-          }
-          src.sendSystemMessage(rewardMsg)
-          src.sendSystemMessage(
-            Component.gray("  Total: ")
-              .append(Component.green("$" + totalValue))
-          )
-
-          console.info("[KubeVote] " + username + " claimed " + processedCount + " pending rewards ($" + totalValue + ")")
+          ctx.getSource().sendSystemMessage(Component.gray("Checking for pending rewards..."))
 
           return 1
         })
@@ -847,6 +734,91 @@ ServerEvents.commandRegistry(event => {
   event.register(
     Commands.literal("kubevote")
       .requires(src => src.hasPermission(2))
+
+      // /kubevote claimqueue - Get and clear pending claim requests (polled by votifier)
+      .then(Commands.literal("claimqueue")
+        .executes(ctx => {
+          if (claimQueue.length === 0) {
+            ctx.getSource().sendSystemMessage(Component.literal("CLAIMQUEUE:"))
+            return 1
+          }
+          // Return queue as comma-separated list and clear it
+          let result = claimQueue.join(",")
+          claimQueue = []
+          ctx.getSource().sendSystemMessage(Component.literal("CLAIMQUEUE:" + result))
+          return 1
+        })
+      )
+
+      // /kubevote claim <player> <count> - Give pending rewards (called by votifier service)
+      .then(Commands.literal("claim")
+        .then(
+          Commands.argument("player", Arguments.STRING.create(event))
+            .then(
+              Commands.argument("count", Arguments.INTEGER.create(event))
+                .executes(ctx => {
+                  let playerName = Arguments.STRING.getResult(ctx, "player")
+                  let count = Arguments.INTEGER.getResult(ctx, "count")
+                  let server = ctx.getSource().getServer()
+
+                  let player = server.getPlayer(playerName)
+                  if (!player) {
+                    ctx.getSource().sendSystemMessage(Component.red("Player " + playerName + " not found or offline"))
+                    return 0
+                  }
+
+                  if (count <= 0) {
+                    player.tell(Component.yellow("You have no pending vote rewards."))
+                    return 1
+                  }
+
+                  // Calculate rewards (base reward per pending vote)
+                  let totalCoins100 = 0
+                  let totalCoins50 = 0
+                  for (let i = 0; i < count; i++) {
+                    let coinReward = calculateCoinReward(1.0)
+                    totalCoins100 += coinReward.coins100
+                    totalCoins50 += coinReward.coins50
+                  }
+
+                  // Give the coins
+                  giveCoinsToPlayer(player, totalCoins100, totalCoins50)
+
+                  // Notify player
+                  let totalValue = (totalCoins100 * 100) + (totalCoins50 * 50)
+                  player.tell(Component.gold("★ ").append(Component.yellow("Pending Rewards Claimed")).append(Component.gold(" ★")))
+                  player.tell(
+                    Component.gray("  Claimed ")
+                      .append(Component.green(count.toString()))
+                      .append(Component.gray(" pending vote reward" + (count !== 1 ? "s" : "") + "!"))
+                  )
+
+                  let rewardMsg = Component.gray("  You received: ")
+                  if (totalCoins100 > 0) {
+                    rewardMsg.append(Component.blue(totalCoins100 + "x "))
+                      .append(Component.gold("$100 Coin"))
+                  }
+                  if (totalCoins100 > 0 && totalCoins50 > 0) {
+                    rewardMsg.append(Component.gray(" + "))
+                  }
+                  if (totalCoins50 > 0) {
+                    rewardMsg.append(Component.green(totalCoins50 + "x "))
+                      .append(Component.darkGreen("$50 Coin"))
+                  }
+                  player.tell(rewardMsg)
+                  player.tell(
+                    Component.gray("  Total: ")
+                      .append(Component.green("$" + totalValue))
+                  )
+
+                  console.info("[KubeVote] " + playerName + " claimed " + count + " pending rewards ($" + totalValue + ")")
+                  ctx.getSource().sendSystemMessage(Component.green("Gave " + count + " pending rewards to " + playerName))
+
+                  return 1
+                })
+            )
+        )
+      )
 
       // /kubevote process <player> <service> - Process incoming vote
       .then(Commands.literal("process")

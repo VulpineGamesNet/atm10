@@ -5,6 +5,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from typing import Optional
 
 from config import Config, load_config
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 class VotifierServer:
     """TCP server that handles Votifier protocol connections."""
 
+    CLAIM_POLL_INTERVAL = 1.0  # Poll every 1 second
+
     def __init__(self, config: Config) -> None:
         """
         Initialize the Votifier server.
@@ -35,6 +38,7 @@ class VotifierServer:
         self.rcon = RconClient(config.rcon)
         self._server_socket: Optional[socket.socket] = None
         self._running = False
+        self._poll_thread: Optional[threading.Thread] = None
 
         if config.debug:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -58,6 +62,8 @@ class VotifierServer:
             # Test RCON connection
             if self.rcon.test_connection():
                 logger.info("RCON connection verified")
+                # Start claim queue polling
+                self._start_claim_polling()
             else:
                 logger.warning("RCON connection failed - votes may not be processed")
 
@@ -72,6 +78,8 @@ class VotifierServer:
     def stop(self) -> None:
         """Stop the Votifier server."""
         self._running = False
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=2.0)
         if self._server_socket:
             try:
                 self._server_socket.close()
@@ -80,6 +88,58 @@ class VotifierServer:
             self._server_socket = None
         self.rcon.close()
         logger.info("Votifier server stopped")
+
+    def _start_claim_polling(self) -> None:
+        """Start the claim queue polling thread."""
+        self._poll_thread = threading.Thread(target=self._poll_claim_queue, daemon=True)
+        self._poll_thread.start()
+        logger.info("Claim queue polling started")
+
+    def _poll_claim_queue(self) -> None:
+        """Poll for claim requests every interval."""
+        while self._running:
+            try:
+                response = self.rcon.execute("kubevote claimqueue")
+                if response and "CLAIMQUEUE:" in response:
+                    queue_data = response.split("CLAIMQUEUE:")[1].strip()
+                    if queue_data:
+                        usernames = queue_data.split(",")
+                        for username in usernames:
+                            username = username.strip()
+                            if username:
+                                logger.info(f"Processing claim request for {username}")
+                                self.claim_pending_rewards(username)
+            except Exception as e:
+                logger.debug(f"Claim queue poll failed: {e}")
+            time.sleep(self.CLAIM_POLL_INTERVAL)
+
+    def claim_pending_rewards(self, username: str) -> bool:
+        """
+        Claim pending rewards for a player.
+
+        Args:
+            username: Player username to claim rewards for
+
+        Returns:
+            True if rewards were claimed, False otherwise
+        """
+        count = pending_store.get_pending_count(username)
+        if count == 0:
+            logger.debug(f"No pending rewards for {username}")
+            return False
+
+        try:
+            response = self.rcon.claim_pending_rewards(username, count)
+            logger.info(f"Claimed {count} pending rewards for {username}: {response}")
+
+            # Mark rewards as claimed
+            pending_store.claim_all(username)
+            # Clean up claimed rewards
+            pending_store.clear_claimed(username)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to claim pending rewards for {username}: {e}")
+            return False
 
     def _accept_connections(self) -> None:
         """Accept and handle incoming connections."""

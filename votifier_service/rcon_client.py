@@ -150,6 +150,20 @@ class RconClient:
         command = f"kubevote process {username} {service_sanitized}"
         return self.execute(command)
 
+    def claim_pending_rewards(self, username: str, count: int) -> str:
+        """
+        Claim pending rewards for a player.
+
+        Args:
+            username: Player to give rewards to
+            count: Number of pending rewards to claim
+
+        Returns:
+            Server response
+        """
+        command = f"kubevote claim {username} {count}"
+        return self.execute(command)
+
     def test_connection(self) -> bool:
         """
         Test the RCON connection.
