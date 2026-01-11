@@ -1,0 +1,11 @@
+# Local testing compose - doesn't require external network
+services:
+  votifier:
+    build: .
+    container_name: minecraft-votifier-test
+    ports:
+      - "8192:8192"
+    env_file:
+      - .env
+    volumes:
+      - ./keys:/app/keys

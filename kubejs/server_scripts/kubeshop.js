@@ -965,72 +965,150 @@ function saveBypassData(server) {
 
 // Get FTB Chunks manager safely
 function getFTBChunksManager() {
-  if (!ftbChunksAvailable || !FTBChunksAPI) return null
+  if (!ftbChunksAvailable || !FTBChunksAPI) {
+    console.warn("[KubeShop DEBUG] FTB Chunks not available: ftbChunksAvailable=" + ftbChunksAvailable)
+    return null
+  }
   try {
     let api = FTBChunksAPI.api()
     if (api && api.isManagerLoaded()) {
       return api.getManager()
     }
+    console.warn("[KubeShop DEBUG] FTB Chunks API exists but manager not loaded")
   } catch(e) {
-    // Manager not ready yet
+    console.warn("[KubeShop DEBUG] Error getting FTB Chunks manager: " + e)
   }
   return null
 }
 
 // Get proper Java UUID from player
 function getPlayerUUID(player) {
+  let playerName = player.getName().getString()
+
   // Try different methods to get the UUID
   try {
     // Method 1: getUUID() - standard Minecraft
-    if (player.getUUID) return player.getUUID()
-  } catch(e) {}
+    if (player.getUUID) {
+      let uuid = player.getUUID()
+      console.info("[KubeShop DEBUG] Got UUID via getUUID() for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
+      return uuid
+    }
+  } catch(e) {
+    console.warn("[KubeShop DEBUG] getUUID() failed for " + playerName + ": " + e)
+  }
 
   try {
     // Method 2: uuid property (KubeJS wrapper)
-    if (player.uuid) return player.uuid
-  } catch(e) {}
+    if (player.uuid) {
+      let uuid = player.uuid
+      console.info("[KubeShop DEBUG] Got UUID via .uuid for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
+      return uuid
+    }
+  } catch(e) {
+    console.warn("[KubeShop DEBUG] .uuid failed for " + playerName + ": " + e)
+  }
 
   try {
     // Method 3: Parse from string UUID using Java
     let uuidStr = player.getStringUuid()
     let UUID = Java.loadClass('java.util.UUID')
-    return UUID.fromString(uuidStr)
-  } catch(e) {}
+    let uuid = UUID.fromString(uuidStr)
+    console.info("[KubeShop DEBUG] Got UUID via fromString for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
+    return uuid
+  } catch(e) {
+    console.warn("[KubeShop DEBUG] UUID.fromString failed for " + playerName + ": " + e)
+  }
 
+  console.error("[KubeShop DEBUG] Could not get UUID for " + playerName)
   return null
 }
 
 // Enable bypass for a player (with tracking)
 function enableShopBypass(player) {
+  let playerName = player.getName().getString()
+  console.info("[KubeShop DEBUG] enableShopBypass called for " + playerName)
+
   let manager = getFTBChunksManager()
-  if (!manager) return false
+  if (!manager) {
+    console.warn("[KubeShop DEBUG] Cannot enable bypass - manager is null")
+    return false
+  }
+  console.info("[KubeShop DEBUG] Got FTB Chunks manager: " + manager)
 
   let uuid = getPlayerUUID(player)
   let uuidStr = player.getStringUuid()
 
-  if (!uuid) return false
+  if (!uuid) {
+    console.warn("[KubeShop DEBUG] Cannot enable bypass - UUID is null")
+    return false
+  }
+  console.info("[KubeShop DEBUG] Player UUID: " + uuid + ", String UUID: " + uuidStr)
 
-  // Don't enable if already has bypass (e.g. admin)
-  if (manager.getBypassProtection(uuid)) return false
+  // Check if bypass already enabled
+  let alreadyHasBypass = false
+  try {
+    alreadyHasBypass = manager.getBypassProtection(uuid)
+    console.info("[KubeShop DEBUG] Current bypass status for " + playerName + ": " + alreadyHasBypass)
+  } catch(e) {
+    console.warn("[KubeShop DEBUG] Error checking existing bypass: " + e)
+  }
 
-  manager.setBypassProtection(uuid, true)
-  playersWithBypass[uuidStr] = player.getName().getString()  // Store username for logging
-  saveBypassData(player.getServer())  // Persist to NBT for reload safety
+  if (alreadyHasBypass) {
+    console.info("[KubeShop DEBUG] Player " + playerName + " already has bypass, skipping")
+    return false
+  }
 
-  return manager.getBypassProtection(uuid)
+  // Try to set bypass
+  console.info("[KubeShop DEBUG] Calling setBypassProtection(true) for " + playerName)
+  try {
+    manager.setBypassProtection(uuid, true)
+    console.info("[KubeShop DEBUG] setBypassProtection called successfully")
+  } catch(e) {
+    console.error("[KubeShop DEBUG] Error setting bypass: " + e)
+    return false
+  }
+
+  // Verify it was set
+  let result = false
+  try {
+    result = manager.getBypassProtection(uuid)
+    console.info("[KubeShop DEBUG] Verification - bypass is now: " + result)
+  } catch(e) {
+    console.error("[KubeShop DEBUG] Error verifying bypass: " + e)
+  }
+
+  if (result) {
+    playersWithBypass[uuidStr] = playerName
+    saveBypassData(player.getServer())
+    console.info("[KubeShop DEBUG] SUCCESS - Bypass enabled for " + playerName)
+  } else {
+    console.error("[KubeShop DEBUG] FAILED - setBypassProtection was called but getBypassProtection returns false for " + playerName)
+  }
+
+  return result
 }
 
 // Disable bypass for a player (with tracking)
 function disableShopBypass(player) {
+  let playerName = player.getName().getString()
   let manager = getFTBChunksManager()
-  if (!manager) return
+  if (!manager) {
+    console.warn("[KubeShop DEBUG] Cannot disable bypass - manager is null")
+    return
+  }
 
   let uuid = getPlayerUUID(player)
   let uuidStr = player.getStringUuid()
 
   // Only disable if we enabled it
   if (playersWithBypass[uuidStr] && uuid) {
-    manager.setBypassProtection(uuid, false)
+    console.info("[KubeShop DEBUG] Disabling bypass for " + playerName)
+    try {
+      manager.setBypassProtection(uuid, false)
+      console.info("[KubeShop DEBUG] setBypassProtection(false) called for " + playerName)
+    } catch(e) {
+      console.error("[KubeShop DEBUG] Error disabling bypass: " + e)
+    }
     delete playersWithBypass[uuidStr]
     saveBypassData(player.getServer())  // Persist to NBT for reload safety
   }
@@ -1071,6 +1149,8 @@ function getShopSignPlayerIsLookingAt(player) {
 
     if (!shop) return null
 
+    // Only log when actually found a shop (to avoid spam)
+    console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " looking at shop sign at " + signKey)
     return { block: block, signKey: signKey, shop: shop }
   } catch(e) {
     return null
@@ -1146,9 +1226,11 @@ ServerEvents.tick(event => {
     // Update bypass state if changed
     if (shouldHaveBypass && !hasCurrentBypass) {
       // Enable bypass - player is now looking at a shop sign
+      console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " should have bypass (looking at shop), enabling...")
       enableShopBypass(player)
     } else if (!shouldHaveBypass && hasCurrentBypass) {
       // Disable bypass - player is no longer looking at a shop sign
+      console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " should not have bypass, disabling...")
       disableShopBypass(player)
     }
   })

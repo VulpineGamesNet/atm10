@@ -1,0 +1,17 @@
+services:
+  votifier:
+    build: .
+    container_name: minecraft-votifier
+    restart: unless-stopped
+    ports:
+      - "8192:8192"
+    env_file:
+      - .env
+    volumes:
+      - ./keys:/app/keys
+    networks:
+      - pterodactyl_nw
+
+networks:
+  pterodactyl_nw:
+    external: true
