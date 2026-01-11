@@ -62,10 +62,11 @@ class VotifierServer:
             # Test RCON connection
             if self.rcon.test_connection():
                 logger.info("RCON connection verified")
-                # Start claim queue polling
-                self._start_claim_polling()
             else:
-                logger.warning("RCON connection failed - votes may not be processed")
+                logger.warning("RCON connection failed - will retry when needed")
+
+            # Start claim queue polling (will reconnect if needed)
+            self._start_claim_polling()
 
             self._accept_connections()
 
@@ -124,19 +125,18 @@ class VotifierServer:
             True if rewards were claimed, False otherwise
         """
         count = pending_store.get_pending_count(username)
-        if count == 0:
-            logger.debug(f"No pending rewards for {username}")
-            return False
 
         try:
+            # Always call RCON so player gets feedback (even if count=0)
             response = self.rcon.claim_pending_rewards(username, count)
-            logger.info(f"Claimed {count} pending rewards for {username}: {response}")
+            logger.info(f"Claim response for {username} (count={count}): {response}")
 
-            # Mark rewards as claimed
-            pending_store.claim_all(username)
-            # Clean up claimed rewards
-            pending_store.clear_claimed(username)
-            return True
+            if count > 0:
+                # Mark rewards as claimed
+                pending_store.claim_all(username)
+                # Clean up claimed rewards
+                pending_store.clear_claimed(username)
+            return count > 0
         except Exception as e:
             logger.error(f"Failed to claim pending rewards for {username}: {e}")
             return False
