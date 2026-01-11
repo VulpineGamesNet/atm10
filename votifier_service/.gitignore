@@ -10,9 +10,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# uv
-uv.lock
-
 # IDE
 .idea/
 .vscode/
