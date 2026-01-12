@@ -700,11 +700,15 @@ class DiscordMCBot(commands.Bot):
         # Sync slash commands
         try:
             if self.config.discord.guild_id:
-                # Sync to specific guild for instant updates during development
                 guild = discord.Object(id=self.config.discord.guild_id)
+                # Copy commands to guild and sync
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
                 logger.info(f"Synced commands to guild {self.config.discord.guild_id}")
+                # Clear stale global commands after guild sync
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync()
+                logger.info("Cleared stale global commands")
             else:
                 # Global sync (can take up to an hour to propagate)
                 await self.tree.sync()
