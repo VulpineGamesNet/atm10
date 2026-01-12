@@ -168,6 +168,9 @@ class VotifierServer:
         for name in player_part.split(","):
             name = name.strip()
             if name:
+                # Strip rank prefixes like [ADM], [MOD], etc.
+                if "]" in name:
+                    name = name.split("]")[-1].strip()
                 players.add(name)
 
         return players

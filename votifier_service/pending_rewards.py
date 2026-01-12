@@ -152,6 +152,12 @@ class VoteDeduplication:
         cutoff = now - self.DEDUP_WINDOW_SECONDS
         self._votes = {k: v for k, v in self._votes.items() if v > cutoff}
 
+    def clear(self) -> None:
+        """Clear all dedup entries."""
+        with self._lock:
+            self._votes.clear()
+        logger.info("Vote deduplication cache cleared")
+
 
 # Global instances
 pending_store = PendingRewardsStore()
