@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 class VotifierServer:
     """TCP server that handles Votifier protocol connections."""
 
-    CLAIM_POLL_INTERVAL = 1.0  # Poll every 1 second
+    CLAIM_POLL_INTERVAL = 1.0  # Poll claim queue every 1 second
+    PLAYER_POLL_INTERVAL = 5.0  # Poll online players every 5 seconds
 
     def __init__(self, config: Config) -> None:
         """
@@ -39,6 +40,8 @@ class VotifierServer:
         self._server_socket: Optional[socket.socket] = None
         self._running = False
         self._poll_thread: Optional[threading.Thread] = None
+        self._player_poll_thread: Optional[threading.Thread] = None
+        self._online_players: set[str] = set()  # Track online players
 
         if config.debug:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -67,6 +70,8 @@ class VotifierServer:
 
             # Start claim queue polling (will reconnect if needed)
             self._start_claim_polling()
+            # Start player join polling for pending rewards notification
+            self._start_player_polling()
 
             self._accept_connections()
 
@@ -81,6 +86,8 @@ class VotifierServer:
         self._running = False
         if self._poll_thread and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=2.0)
+        if self._player_poll_thread and self._player_poll_thread.is_alive():
+            self._player_poll_thread.join(timeout=2.0)
         if self._server_socket:
             try:
                 self._server_socket.close()
@@ -113,6 +120,76 @@ class VotifierServer:
             except Exception as e:
                 logger.debug(f"Claim queue poll failed: {e}")
             time.sleep(self.CLAIM_POLL_INTERVAL)
+
+    def _start_player_polling(self) -> None:
+        """Start the player join polling thread."""
+        self._player_poll_thread = threading.Thread(target=self._poll_online_players, daemon=True)
+        self._player_poll_thread.start()
+        logger.info("Player join polling started")
+
+    def _poll_online_players(self) -> None:
+        """Poll online players and notify new joins with pending rewards."""
+        while self._running:
+            try:
+                response = self.rcon.execute("list")
+                current_players = self._parse_player_list(response)
+
+                # Find newly joined players
+                new_players = current_players - self._online_players
+
+                for player in new_players:
+                    count = pending_store.get_pending_count(player)
+                    if count > 0:
+                        logger.info(f"Player {player} joined with {count} pending rewards")
+                        self._notify_pending_rewards(player, count)
+
+                self._online_players = current_players
+
+            except Exception as e:
+                logger.debug(f"Player poll failed: {e}")
+            time.sleep(self.PLAYER_POLL_INTERVAL)
+
+    def _parse_player_list(self, response: str) -> set[str]:
+        """Parse the list command response to extract player names."""
+        # Format: "There are X of a max of Y players online: Player1, Player2"
+        # Or: "There are 0 of a max of Y players online:"
+        players: set[str] = set()
+        if not response or ":" not in response:
+            return players
+
+        parts = response.split(":")
+        if len(parts) < 2:
+            return players
+
+        player_part = parts[-1].strip()
+        if not player_part:
+            return players
+
+        for name in player_part.split(","):
+            name = name.strip()
+            if name:
+                players.add(name)
+
+        return players
+
+    def _notify_pending_rewards(self, username: str, count: int) -> None:
+        """Send a pretty message to player about pending rewards."""
+        try:
+            # Use tellraw for pretty JSON message
+            msg = (
+                '["",{"text":"★ ","color":"gold"},'
+                '{"text":"Vote Rewards Available","color":"yellow"},'
+                '{"text":" ★\\n","color":"gold"},'
+                '{"text":"  You have ","color":"gray"},'
+                f'{{"text":"{count}","color":"green"}},'
+                '{"text":" pending vote reward' + ('s' if count != 1 else '') + '!\\n","color":"gray"},'
+                '{"text":"  Use ","color":"gray"},'
+                '{"text":"/vote claim","color":"aqua","clickEvent":{"action":"run_command","value":"/vote claim"}},'
+                '{"text":" to collect them.","color":"gray"}]'
+            )
+            self.rcon.execute(f'tellraw {username} {msg}')
+        except Exception as e:
+            logger.error(f"Failed to notify {username} about pending rewards: {e}")
 
     def claim_pending_rewards(self, username: str) -> bool:
         """
