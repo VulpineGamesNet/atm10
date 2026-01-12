@@ -98,6 +98,22 @@ require-resource-pack=false
 - Minecraft 1.21.1
 - NeoForge
 
+### KubeJS 1.21 Component System
+In Minecraft 1.21+, items use data components instead of NBT. Do NOT use `setNbt()`.
+
+Use component syntax:
+```javascript
+// Creating items with components
+let item = Item.of('minecraft:gold_nugget[minecraft:custom_model_data=123,minecraft:custom_name=\'{"text":"Coin"}\']')
+
+// Or build the string
+let itemString = 'minecraft:gold_nugget[' +
+  'minecraft:custom_model_data=' + customModelData + ',' +
+  'minecraft:custom_name=\'' + jsonName + '\'' +
+  ']'
+let item = Item.of(itemString).withCount(count)
+```
+
 ### Reload Scripts
 ```
 /kubejs reload server_scripts

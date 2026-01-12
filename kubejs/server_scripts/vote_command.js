@@ -10,6 +10,7 @@ const VOTE_ROOT_KEY = "kubevote"
 // Voting sites configuration
 // id: must match the service name sent by voting sites
 // cooldown: display cooldown in milliseconds (86400000 = 24 hours) - for UI only
+// hidden: if true, site won't appear in /vote list but still processes votes
 const VOTING_SITES = [
   {
     id: "moddedminecraftservers.com",
@@ -51,7 +52,8 @@ const VOTING_SITES = [
     id: "minestatus.net_test_vote",
     name: "MineStatus Test",
     url: "https://minestatus.net/",
-    cooldown: 86400000
+    cooldown: 86400000,
+    hidden: true
   }
 ]
 
@@ -503,6 +505,7 @@ ServerEvents.commandRegistry(event => {
         // Show each voting site with cooldown status
         for (let i = 0; i < VOTING_SITES.length; i++) {
           let site = VOTING_SITES[i]
+          if (site.hidden) continue
           let lastVote = data.lastVotes[site.id] || 0
           let timeUntilReady = site.cooldown - (now - lastVote)
 
@@ -917,6 +920,7 @@ ServerEvents.commandRegistry(event => {
     src.sendSystemMessage(Component.gray("--- Site Cooldowns ---"))
     for (let i = 0; i < VOTING_SITES.length; i++) {
       let site = VOTING_SITES[i]
+      if (site.hidden) continue
       let lastVote = data.lastVotes[site.id] || 0
       let timeUntilReady = site.cooldown - (now - lastVote)
 
