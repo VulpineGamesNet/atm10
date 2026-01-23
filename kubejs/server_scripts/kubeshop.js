@@ -1,22 +1,28 @@
-// KubeShop - Complete Economy & Shop System
+// KubeShop - Complete Economy & Shop System (MySQL Version)
 // Single file to avoid KubeJS scope issues between scripts
 
 // ============================================================================
-// CONFIGURATION
+// MYSQL CONFIGURATION - Read from config file
 // ============================================================================
 
+// Load config from kubejs/config/kubeshop.json
+let dbConfig = {}
+try {
+  dbConfig = JsonIO.read('kubejs/config/kubeshop.json') || {}
+} catch (e) {
+  console.warn('[KubeShop] Could not load config file, using defaults: ' + e)
+}
+
+const DB_HOST = dbConfig.host || 'localhost'
+const DB_PORT = parseInt(dbConfig.port || '3306')
+const DB_NAME = dbConfig.database || 'minecraft'
+const DB_USER = dbConfig.user || 'root'
+const DB_PASS = dbConfig.password || ''
+
 const STARTING_BALANCE = 0
-const ROOT_KEY = "kubeshop"  // All data stored under this key in server.persistentData
 const MAX_HISTORY_PER_PLAYER = 50
 
-// Sub-keys within the root
-const BALANCES_KEY = "balances"
-const SHOPS_KEY = "shops"
-const HISTORY_KEY = "history"
-const BYPASS_KEY = "bypass"
-
 // Coin denominations for withdraw/deposit (ordered largest to smallest for greedy algorithm)
-// Uses vanilla paper items with CustomModelData NBT for server-side only implementation
 const COIN_BASE_ITEM = 'minecraft:gold_nugget'
 const COIN_DENOMINATIONS = [
   { value: 10000, customModelData: 710000, name: 'Coin', lore: 'Worth $10,000', color: 'gold' },
@@ -27,115 +33,258 @@ const COIN_DENOMINATIONS = [
 ]
 
 // ============================================================================
-// IN-MEMORY CACHES
+// MYSQL CONNECTION
 // ============================================================================
 
-let balancesCache = {}
-let shopsCache = {}
-let historyCache = {}
-let dataLoaded = false
+let SqlTypes = Java.loadClass('java.sql.Types')
 
-// ============================================================================
-// DATA LOADING - Ensures data is loaded (lazy loading for /reload support)
-// ============================================================================
+// Use MySQL driver directly to bypass DriverManager restrictions
+let MysqlDriver = Java.loadClass('com.mysql.cj.jdbc.Driver')
+let mysqlDriver = new MysqlDriver()
 
-// Get or create the root kubeshop NBT compound
-function getRootNbt(server) {
-  if (!server.persistentData.contains(ROOT_KEY)) {
-    server.persistentData.put(ROOT_KEY, NBT.compoundTag())
-  }
-  return server.persistentData.getCompound(ROOT_KEY)
+function getConnection() {
+  // Pass credentials in URL to avoid needing java.util.Properties
+  let url = 'jdbc:mysql://' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME +
+    '?user=' + encodeURIComponent(DB_USER) +
+    '&password=' + encodeURIComponent(DB_PASS) +
+    '&autoReconnect=true'
+  return mysqlDriver.connect(url, null)
 }
 
-function ensureDataLoaded(server) {
-  if (dataLoaded) return
-
-  console.info("[KubeShop] Loading data (lazy load)...")
-  loadBalances(server)
-  loadShops(server)
-  loadHistory(server)
-  dataLoaded = true
-}
-
-// ============================================================================
-// CURRENCY SYSTEM - Data Persistence
-// ============================================================================
-
-function loadBalances(server) {
-  let rootNbt = getRootNbt(server)
-
-  if (!rootNbt.contains(BALANCES_KEY)) {
-    rootNbt.put(BALANCES_KEY, NBT.compoundTag())
-  }
-  let balNbt = rootNbt.getCompound(BALANCES_KEY)
-
-  balancesCache = {}
-
-  let keySet = balNbt.getAllKeys().toArray()
-  for (let i = 0; i < keySet.length; i++) {
-    let id = keySet[i]
-    balancesCache[id] = balNbt.getInt(id)
-  }
-  console.info("[KubeShop] Loaded " + keySet.length + " balance entries")
-}
-
-function saveBalance(server, playerUuid) {
-  let rootNbt = getRootNbt(server)
-  if (!rootNbt.contains(BALANCES_KEY)) {
-    rootNbt.put(BALANCES_KEY, NBT.compoundTag())
-  }
-  rootNbt.getCompound(BALANCES_KEY).putInt(playerUuid, balancesCache[playerUuid])
-}
-
-function ensurePlayer(server, uuid) {
-  if (balancesCache[uuid] === undefined) {
-    balancesCache[uuid] = STARTING_BALANCE
-    saveBalance(server, uuid)
+function closeQuietly(resource) {
+  if (resource) {
+    try { resource.close() } catch(e) {}
   }
 }
 
+// Track database availability
+let databaseAvailable = false
+
+// Initialize database tables on script load
+function initDatabase() {
+  let conn = null
+  let stmt = null
+  try {
+    console.info('[KubeShop] Connecting to database at ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME + '...')
+    conn = getConnection()
+    stmt = conn.createStatement()
+
+    // Create wallets table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubeshop_wallets (' +
+      '  uuid VARCHAR(36) PRIMARY KEY,' +
+      '  balance INT NOT NULL DEFAULT 0,' +
+      '  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' +
+      ')'
+    )
+
+    // Create shops table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubeshop_shops (' +
+      '  sign_key VARCHAR(128) PRIMARY KEY,' +
+      '  owner_uuid VARCHAR(36) NOT NULL,' +
+      '  chest_pos VARCHAR(128) NOT NULL,' +
+      '  shop_type VARCHAR(4) NOT NULL,' +
+      '  price INT NOT NULL,' +
+      '  item_template TEXT NOT NULL,' +
+      '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' +
+      ')'
+    )
+
+    // Create history table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubeshop_history (' +
+      '  id INT AUTO_INCREMENT PRIMARY KEY,' +
+      '  player_uuid VARCHAR(36) NOT NULL,' +
+      '  type VARCHAR(20) NOT NULL,' +
+      '  amount INT NOT NULL,' +
+      '  other_player VARCHAR(64),' +
+      '  description TEXT,' +
+      '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' +
+      '  INDEX idx_player_uuid (player_uuid),' +
+      '  INDEX idx_created_at (created_at)' +
+      ')'
+    )
+
+    databaseAvailable = true
+    console.info('[KubeShop] Database tables initialized successfully')
+  } catch(e) {
+    databaseAvailable = false
+    console.error('[KubeShop] ========================================')
+    console.error('[KubeShop] FAILED TO CONNECT TO DATABASE!')
+    console.error('[KubeShop] Error: ' + e)
+    console.error('[KubeShop] Host: ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME)
+    console.error('[KubeShop] User: ' + DB_USER)
+    console.error('[KubeShop] KubeShop economy features will be DISABLED')
+    console.error('[KubeShop] ========================================')
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
+}
+
+// Initialize database on script load
+initDatabase()
+
+// Lightweight cache of shop sign keys for tick handler (avoid DB queries every 2 ticks)
+let shopSignKeysCache = {}
+let shopSignKeysCacheLastRefresh = 0
+const SHOP_CACHE_REFRESH_TICKS = 100  // Refresh every 5 seconds
+
+function refreshShopSignKeysCache() {
+  if (!databaseAvailable) return
+
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('SELECT sign_key FROM kubeshop_shops')
+    rs = stmt.executeQuery()
+    let newCache = {}
+    while (rs.next()) {
+      newCache[rs.getString('sign_key')] = true
+    }
+    shopSignKeysCache = newCache
+  } catch(e) {
+    console.error('[KubeShop] refreshShopSignKeysCache error: ' + e)
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
+}
+
+function isShopSignKey(signKey) {
+  return shopSignKeysCache[signKey] === true
+}
+
+// Pre-populate shop sign keys cache
+refreshShopSignKeysCache()
+
 // ============================================================================
-// CURRENCY SYSTEM - API Functions
+// CURRENCY SYSTEM - MySQL Functions
 // ============================================================================
 
 function getBalance(server, uuid) {
-  ensureDataLoaded(server)
-  ensurePlayer(server, uuid)
-  return balancesCache[uuid]
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('SELECT balance FROM kubeshop_wallets WHERE uuid = ?')
+    stmt.setString(1, uuid)
+    rs = stmt.executeQuery()
+    if (rs.next()) {
+      return rs.getInt('balance')
+    }
+    // Player not found, create with starting balance
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    stmt = conn.prepareStatement('INSERT INTO kubeshop_wallets (uuid, balance) VALUES (?, ?)')
+    stmt.setString(1, uuid)
+    stmt.setInt(2, STARTING_BALANCE)
+    stmt.executeUpdate()
+    return STARTING_BALANCE
+  } catch(e) {
+    console.error('[KubeShop] getBalance error: ' + e)
+    return STARTING_BALANCE
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 function setBalance(server, uuid, amount) {
-  ensureDataLoaded(server)
   if (amount < 0) return false
-  balancesCache[uuid] = Math.floor(amount)
-  saveBalance(server, uuid)
-  return true
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement(
+      'INSERT INTO kubeshop_wallets (uuid, balance) VALUES (?, ?) ' +
+      'ON DUPLICATE KEY UPDATE balance = ?'
+    )
+    stmt.setString(1, uuid)
+    stmt.setInt(2, Math.floor(amount))
+    stmt.setInt(3, Math.floor(amount))
+    stmt.executeUpdate()
+    return true
+  } catch(e) {
+    console.error('[KubeShop] setBalance error: ' + e)
+    return false
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 function addBalance(server, uuid, amount) {
-  ensureDataLoaded(server)
   if (amount < 0) return false
-  ensurePlayer(server, uuid)
-  balancesCache[uuid] += Math.floor(amount)
-  saveBalance(server, uuid)
-  return true
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    // First ensure player exists
+    stmt = conn.prepareStatement(
+      'INSERT INTO kubeshop_wallets (uuid, balance) VALUES (?, ?) ' +
+      'ON DUPLICATE KEY UPDATE balance = balance + ?'
+    )
+    stmt.setString(1, uuid)
+    stmt.setInt(2, Math.floor(amount))
+    stmt.setInt(3, Math.floor(amount))
+    stmt.executeUpdate()
+    return true
+  } catch(e) {
+    console.error('[KubeShop] addBalance error: ' + e)
+    return false
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 function removeBalance(server, uuid, amount) {
-  ensureDataLoaded(server)
   if (amount < 0) return false
-  ensurePlayer(server, uuid)
   let toRemove = Math.floor(amount)
-  if (balancesCache[uuid] < toRemove) return false
-  balancesCache[uuid] -= toRemove
-  saveBalance(server, uuid)
-  return true
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getConnection()
+    // Check current balance first
+    stmt = conn.prepareStatement('SELECT balance FROM kubeshop_wallets WHERE uuid = ?')
+    stmt.setString(1, uuid)
+    rs = stmt.executeQuery()
+    let currentBalance = 0
+    if (rs.next()) {
+      currentBalance = rs.getInt('balance')
+    }
+    closeQuietly(rs)
+    closeQuietly(stmt)
+
+    if (currentBalance < toRemove) return false
+
+    // Update balance
+    stmt = conn.prepareStatement('UPDATE kubeshop_wallets SET balance = balance - ? WHERE uuid = ? AND balance >= ?')
+    stmt.setInt(1, toRemove)
+    stmt.setString(2, uuid)
+    stmt.setInt(3, toRemove)
+    let updated = stmt.executeUpdate()
+    return updated > 0
+  } catch(e) {
+    console.error('[KubeShop] removeBalance error: ' + e)
+    return false
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 function hasBalance(server, uuid, amount) {
-  ensureDataLoaded(server)
-  ensurePlayer(server, uuid)
-  return balancesCache[uuid] >= Math.floor(amount)
+  return getBalance(server, uuid) >= Math.floor(amount)
 }
 
 function formatBalance(amount) {
@@ -143,126 +292,221 @@ function formatBalance(amount) {
 }
 
 // ============================================================================
-// SHOP SYSTEM - Data Persistence
+// SHOP SYSTEM - MySQL Functions
 // ============================================================================
 
-function loadShops(server) {
-  let rootNbt = getRootNbt(server)
-
-  if (!rootNbt.contains(SHOPS_KEY)) {
-    rootNbt.put(SHOPS_KEY, NBT.compoundTag())
-  }
-
-  shopsCache = {}
-  let shopsNbt = rootNbt.getCompound(SHOPS_KEY)
-  let keys = shopsNbt.getAllKeys().toArray()
-
-  for (let i = 0; i < keys.length; i++) {
-    let key = keys[i]
-    let shopNbt = shopsNbt.getCompound(key)
-    shopsCache[key] = {
-      owner: shopNbt.getString("owner"),
-      chestPos: shopNbt.getString("chestPos"),
-      type: shopNbt.getString("type"),
-      price: shopNbt.getInt("price"),
-      itemTemplate: shopNbt.getString("itemTemplate")
-    }
-  }
-}
-
 function saveShop(server, signKey, shopData) {
-  let rootNbt = getRootNbt(server)
-  if (!rootNbt.contains(SHOPS_KEY)) {
-    rootNbt.put(SHOPS_KEY, NBT.compoundTag())
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement(
+      'INSERT INTO kubeshop_shops (sign_key, owner_uuid, chest_pos, shop_type, price, item_template) ' +
+      'VALUES (?, ?, ?, ?, ?, ?) ' +
+      'ON DUPLICATE KEY UPDATE owner_uuid = ?, chest_pos = ?, shop_type = ?, price = ?, item_template = ?'
+    )
+    stmt.setString(1, signKey)
+    stmt.setString(2, shopData.owner)
+    stmt.setString(3, shopData.chestPos)
+    stmt.setString(4, shopData.type)
+    stmt.setInt(5, shopData.price)
+    stmt.setString(6, shopData.itemTemplate)
+    // ON DUPLICATE KEY UPDATE values
+    stmt.setString(7, shopData.owner)
+    stmt.setString(8, shopData.chestPos)
+    stmt.setString(9, shopData.type)
+    stmt.setInt(10, shopData.price)
+    stmt.setString(11, shopData.itemTemplate)
+    stmt.executeUpdate()
+    // Update cache immediately
+    shopSignKeysCache[signKey] = true
+  } catch(e) {
+    console.error('[KubeShop] saveShop error: ' + e)
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
   }
-
-  let shopNbt = NBT.compoundTag()
-  shopNbt.putString("owner", shopData.owner)
-  shopNbt.putString("chestPos", shopData.chestPos)
-  shopNbt.putString("type", shopData.type)
-  shopNbt.putInt("price", shopData.price)
-  shopNbt.putString("itemTemplate", shopData.itemTemplate)
-
-  rootNbt.getCompound(SHOPS_KEY).put(signKey, shopNbt)
-  shopsCache[signKey] = shopData
 }
 
 function removeShop(server, signKey) {
-  let rootNbt = getRootNbt(server)
-  if (rootNbt.contains(SHOPS_KEY)) {
-    rootNbt.getCompound(SHOPS_KEY).remove(signKey)
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('DELETE FROM kubeshop_shops WHERE sign_key = ?')
+    stmt.setString(1, signKey)
+    stmt.executeUpdate()
+    // Update cache immediately
+    delete shopSignKeysCache[signKey]
+  } catch(e) {
+    console.error('[KubeShop] removeShop error: ' + e)
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
   }
-  delete shopsCache[signKey]
 }
 
 function getShop(signKey) {
-  return shopsCache[signKey] || null
-}
-
-// ============================================================================
-// TRANSACTION HISTORY SYSTEM
-// ============================================================================
-
-function loadHistory(server) {
-  let rootNbt = getRootNbt(server)
-
-  if (!rootNbt.contains(HISTORY_KEY)) {
-    rootNbt.put(HISTORY_KEY, NBT.compoundTag())
-  }
-
-  historyCache = {}
-  let historyNbt = rootNbt.getCompound(HISTORY_KEY)
-  let keys = historyNbt.getAllKeys().toArray()
-
-  for (let i = 0; i < keys.length; i++) {
-    let playerUuid = keys[i]
-    let playerHistoryStr = historyNbt.getString(playerUuid)
-    try {
-      historyCache[playerUuid] = JSON.parse(playerHistoryStr)
-    } catch(e) {
-      historyCache[playerUuid] = []
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('SELECT * FROM kubeshop_shops WHERE sign_key = ?')
+    stmt.setString(1, signKey)
+    rs = stmt.executeQuery()
+    if (rs.next()) {
+      return {
+        owner: rs.getString('owner_uuid'),
+        chestPos: rs.getString('chest_pos'),
+        type: rs.getString('shop_type'),
+        price: rs.getInt('price'),
+        itemTemplate: rs.getString('item_template')
+      }
     }
+    return null
+  } catch(e) {
+    console.error('[KubeShop] getShop error: ' + e)
+    return null
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
   }
-  console.info("[KubeShop] Loaded history for " + keys.length + " players")
 }
 
-function saveHistory(server, playerUuid) {
-  let rootNbt = getRootNbt(server)
-  if (!rootNbt.contains(HISTORY_KEY)) {
-    rootNbt.put(HISTORY_KEY, NBT.compoundTag())
+function getAllShops() {
+  let conn = null
+  let stmt = null
+  let rs = null
+  let shops = {}
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('SELECT * FROM kubeshop_shops')
+    rs = stmt.executeQuery()
+    while (rs.next()) {
+      let signKey = rs.getString('sign_key')
+      shops[signKey] = {
+        owner: rs.getString('owner_uuid'),
+        chestPos: rs.getString('chest_pos'),
+        type: rs.getString('shop_type'),
+        price: rs.getInt('price'),
+        itemTemplate: rs.getString('item_template')
+      }
+    }
+    return shops
+  } catch(e) {
+    console.error('[KubeShop] getAllShops error: ' + e)
+    return {}
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
   }
-  let history = historyCache[playerUuid] || []
-  rootNbt.getCompound(HISTORY_KEY).putString(playerUuid, JSON.stringify(history))
 }
 
-// Transaction types: "pay_sent", "pay_received", "shop_buy", "shop_sell", "admin_set", "admin_add", "admin_subtract"
+function getShopsByChestPos(chestPos) {
+  let conn = null
+  let stmt = null
+  let rs = null
+  let results = []
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement('SELECT sign_key FROM kubeshop_shops WHERE chest_pos = ?')
+    stmt.setString(1, chestPos)
+    rs = stmt.executeQuery()
+    while (rs.next()) {
+      results.push(rs.getString('sign_key'))
+    }
+    return results
+  } catch(e) {
+    console.error('[KubeShop] getShopsByChestPos error: ' + e)
+    return []
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
+}
+
+// ============================================================================
+// TRANSACTION HISTORY SYSTEM - MySQL Functions
+// ============================================================================
+
 function addHistoryEntry(server, playerUuid, type, amount, otherPlayer, description) {
-  ensureDataLoaded(server)
-  if (!historyCache[playerUuid]) {
-    historyCache[playerUuid] = []
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement(
+      'INSERT INTO kubeshop_history (player_uuid, type, amount, other_player, description) ' +
+      'VALUES (?, ?, ?, ?, ?)'
+    )
+    stmt.setString(1, playerUuid)
+    stmt.setString(2, type)
+    stmt.setInt(3, amount)
+    if (otherPlayer) {
+      stmt.setString(4, otherPlayer)
+    } else {
+      stmt.setNull(4, SqlTypes.VARCHAR)
+    }
+    if (description) {
+      stmt.setString(5, description)
+    } else {
+      stmt.setNull(5, SqlTypes.VARCHAR)
+    }
+    stmt.executeUpdate()
+
+    // Trim old entries if over limit
+    closeQuietly(stmt)
+    stmt = conn.prepareStatement(
+      'DELETE FROM kubeshop_history WHERE player_uuid = ? AND id NOT IN (' +
+      '  SELECT id FROM (SELECT id FROM kubeshop_history WHERE player_uuid = ? ORDER BY created_at DESC LIMIT ?) AS t' +
+      ')'
+    )
+    stmt.setString(1, playerUuid)
+    stmt.setString(2, playerUuid)
+    stmt.setInt(3, MAX_HISTORY_PER_PLAYER)
+    stmt.executeUpdate()
+  } catch(e) {
+    console.error('[KubeShop] addHistoryEntry error: ' + e)
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
   }
-
-  let entry = {
-    type: type,
-    amount: amount,
-    other: otherPlayer || null,
-    desc: description || null,
-    time: Date.now()
-  }
-
-  historyCache[playerUuid].unshift(entry)
-
-  // Trim to max entries
-  if (historyCache[playerUuid].length > MAX_HISTORY_PER_PLAYER) {
-    historyCache[playerUuid] = historyCache[playerUuid].slice(0, MAX_HISTORY_PER_PLAYER)
-  }
-
-  saveHistory(server, playerUuid)
 }
 
 function getHistory(server, playerUuid) {
-  ensureDataLoaded(server)
-  return historyCache[playerUuid] || []
+  let conn = null
+  let stmt = null
+  let rs = null
+  let history = []
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement(
+      'SELECT * FROM kubeshop_history WHERE player_uuid = ? ORDER BY created_at DESC LIMIT ?'
+    )
+    stmt.setString(1, playerUuid)
+    stmt.setInt(2, MAX_HISTORY_PER_PLAYER)
+    rs = stmt.executeQuery()
+    while (rs.next()) {
+      history.push({
+        type: rs.getString('type'),
+        amount: rs.getInt('amount'),
+        other: rs.getString('other_player'),
+        desc: rs.getString('description'),
+        time: rs.getTimestamp('created_at').getTime()
+      })
+    }
+    return history
+  } catch(e) {
+    console.error('[KubeShop] getHistory error: ' + e)
+    return []
+  } finally {
+    closeQuietly(rs)
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 function formatTimestamp(timestamp) {
@@ -283,11 +527,6 @@ function formatTimestamp(timestamp) {
 
 // Create a coin item with proper components (1.21+ format)
 function createCoinItem(denom, count) {
-  // Use the new 1.21 component syntax: item[component=value,...]
-  // custom_name uses JSON text component format
-  // lore uses JSON array of text components
-  // Note: In 1.21.1, custom_model_data is still a simple integer
-  // In 1.21.4+, it becomes a complex structure with floats/flags/strings/colors
   let itemString = COIN_BASE_ITEM + '[' +
     'minecraft:custom_model_data=' + denom.customModelData + ',' +
     'minecraft:custom_name=\'{"text":"' + denom.name + '","color":"' + denom.color + '","italic":false}\',' +
@@ -297,37 +536,28 @@ function createCoinItem(denom, count) {
 }
 
 // Get the CustomModelData from an item stack (returns 0 if not present)
-// In 1.21+, custom_model_data is a data component, not NBT
 function getItemCustomModelData(stack) {
   if (!stack || stack.isEmpty()) return 0
 
-  // Try 1.21+ component access
   try {
     let customModelData = stack.get('minecraft:custom_model_data')
     if (customModelData !== null && customModelData !== undefined) {
-      // Direct number
       if (typeof customModelData === 'number') return customModelData
 
-      // Object with .value property (direct access)
       if (typeof customModelData === 'object') {
-        // Try .value() method first (Java getter)
         if (typeof customModelData.value === 'function') {
           return customModelData.value()
         }
-        // Try .value property
         if (customModelData.value !== undefined) {
           return customModelData.value
         }
-        // Try .getValue() method
         if (typeof customModelData.getValue === 'function') {
           return customModelData.getValue()
         }
-        // Parse from toString() - "CustomModelData[value=719001]"
-        // Rhino doesn't support regex .match(), so parse manually
         let str = customModelData.toString()
         let valueIdx = str.indexOf("value=")
         if (valueIdx !== -1) {
-          let startIdx = valueIdx + 6  // length of "value="
+          let startIdx = valueIdx + 6
           let endIdx = startIdx
           while (endIdx < str.length && str.charAt(endIdx) >= '0' && str.charAt(endIdx) <= '9') {
             endIdx++
@@ -338,7 +568,6 @@ function getItemCustomModelData(stack) {
         }
       }
 
-      // Try parsing directly
       let parsed = parseInt(customModelData)
       if (!isNaN(parsed)) return parsed
     }
@@ -378,7 +607,6 @@ function countPlayerCoins(player) {
   let total = 0
   let breakdown = {}
 
-  // Initialize breakdown with customModelData keys
   for (let i = 0; i < COIN_DENOMINATIONS.length; i++) {
     breakdown[COIN_DENOMINATIONS[i].customModelData] = 0
   }
@@ -399,7 +627,6 @@ function countPlayerCoins(player) {
 }
 
 // Give coins to player using greedy algorithm (fewest coins possible)
-// Note: If inventory is full, items will drop on the ground
 function giveCoinsEfficient(player, amount) {
   let remaining = amount
 
@@ -409,7 +636,6 @@ function giveCoinsEfficient(player, amount) {
       let count = Math.floor(remaining / denom.value)
       remaining = remaining % denom.value
 
-      // Give in stacks of 64
       while (count > 0) {
         let stackSize = Math.min(count, 64)
         player.give(createCoinItem(denom, stackSize))
@@ -434,7 +660,6 @@ function giveCoinsSpecific(player, amount, denomination) {
 
   let count = amount / denomination
 
-  // Give in stacks of 64
   while (count > 0) {
     let stackSize = Math.min(count, 64)
     player.give(createCoinItem(denomInfo, stackSize))
@@ -445,16 +670,13 @@ function giveCoinsSpecific(player, amount, denomination) {
 }
 
 // Remove coins from player inventory worth the specified amount (greedy, largest first)
-// IMPORTANT: This function requires exact change - use canPayExactWithCoins() to check first
 function removeCoinsFromPlayer(player, amount) {
-  // Pre-check: verify exact payment is possible
   if (!canPayExactWithCoins(player, amount)) return false
 
   let inv = player.getInventory()
   let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 36)
   let remaining = amount
 
-  // Process largest denominations first
   for (let d = 0; d < COIN_DENOMINATIONS.length && remaining > 0; d++) {
     let denom = COIN_DENOMINATIONS[d]
 
@@ -467,7 +689,6 @@ function removeCoinsFromPlayer(player, amount) {
         let toRemove = Math.min(stackCount, maxCanUse)
 
         if (toRemove > 0) {
-          // Properly update inventory - shrink and set back to ensure update
           stack.shrink(toRemove)
           if (stack.isEmpty()) {
             inv.setItem(i, Item.of('minecraft:air'))
@@ -488,7 +709,6 @@ function canPayExactWithCoins(player, amount) {
   let coinInfo = countPlayerCoins(player)
   if (coinInfo.total < amount) return false
 
-  // Greedy check - simulate removal
   let remaining = amount
   for (let d = 0; d < COIN_DENOMINATIONS.length && remaining > 0; d++) {
     let denom = COIN_DENOMINATIONS[d]
@@ -516,9 +736,11 @@ function isWallSign(block) {
   return blockId.indexOf("wall_sign") !== -1
 }
 
-function isChest(block) {
+function isContainer(block) {
   let blockId = block.getId()
-  return blockId.indexOf("chest") !== -1 && blockId.indexOf("ender_chest") === -1
+  if (blockId.indexOf("ender_chest") !== -1) return false
+  let inv = block.getInventory()
+  return inv !== null && inv !== undefined
 }
 
 function getAttachedBlock(signBlock) {
@@ -541,7 +763,6 @@ function getAttachedBlock(signBlock) {
   return null
 }
 
-// Extract only digits from a string (Rhino doesn't support regex in replace)
 function extractDigits(str) {
   let result = ""
   for (let i = 0; i < str.length; i++) {
@@ -553,25 +774,17 @@ function extractDigits(str) {
   return result
 }
 
-// Remove surrounding quotes from sign text (stored as JSON strings)
-// Also extracts "text" field from JSON text components
 function unquoteSignText(str) {
-  // Try parsing as JSON - sign text is stored as JSON string literals or components
   try {
     let parsed = JSON.parse(str)
-    // If it's a simple string, return it
     if (typeof parsed === "string") {
       return parsed
     }
-    // If it's a text component object with "text" field, extract it
     if (typeof parsed === "object" && parsed !== null && parsed.text) {
       return parsed.text
     }
-  } catch (e) {
-    // ignore parse errors
-  }
+  } catch (e) {}
 
-  // Fallback: manual quote removal
   if (str.length >= 2 && str.charCodeAt(0) === 34 && str.charCodeAt(str.length - 1) === 34) {
     return str.substring(1, str.length - 1)
   }
@@ -639,15 +852,12 @@ function updateSignForShop(signBlock, shopType, price) {
   let messages = frontText.getList("messages", 8)
   if (!messages || messages.size() < 4) return
 
-  // Preserve existing description lines (indices 1 and 2)
   let line2Original = messages.getString(1)
   let line3Original = messages.getString(2)
 
-  // Format: price with $ at end (e.g., "10$")
   let line1Component = '{"text":"[' + shopType + ']","color":"yellow"}'
   let line4Component = '{"text":"' + price + '$","color":"green"}'
 
-  // Create a new messages list to ensure proper NBT handling
   let newMessages = NBT.listTag()
   newMessages.add(NBT.stringTag(line1Component))
   newMessages.add(NBT.stringTag(line2Original))
@@ -657,13 +867,10 @@ function updateSignForShop(signBlock, shopType, price) {
   frontText.put("messages", newMessages)
   nbt.put("front_text", frontText)
 
-  // Wax the sign to prevent text editing
   nbt.putByte("is_waxed", 1)
 
-  // Update using setEntityData and force sync
   signBlock.setEntityData(nbt)
 
-  // Force block update to sync to client
   let level = signBlock.getLevel()
   let pos = signBlock.getPos()
   let state = signBlock.getBlockState()
@@ -679,11 +886,9 @@ function serializeInventory(chestBlock) {
   if (!inv) return "[]"
 
   let items = []
-  // Try different methods to get slot count
   let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 27)
 
   for (let i = 0; i < slots; i++) {
-    // Try different methods to get item in slot
     let stack = null
     if (inv.getStackInSlot) {
       stack = inv.getStackInSlot(i)
@@ -708,7 +913,6 @@ function chestHasItems(chestBlock, itemTemplateJson) {
   return missing.length === 0
 }
 
-// Returns array of missing item IDs (simplified names)
 function getMissingItems(inv, itemTemplateJson) {
   let template = JSON.parse(itemTemplateJson)
   if (!inv) return template.map(function(item) { return item.id })
@@ -734,9 +938,7 @@ function getMissingItems(inv, itemTemplateJson) {
   let missing = []
   for (let key in needed) {
     if (needed[key] > 0) {
-      // Simplify item name: "minecraft:diamond_sword" -> "Diamond Sword"
       let simpleName = key.replace("minecraft:", "").replace(/_/g, " ")
-      // Capitalize words
       simpleName = simpleName.split(" ").map(function(word) {
         return word.charAt(0).toUpperCase() + word.slice(1)
       }).join(" ")
@@ -765,7 +967,6 @@ function removeItemsFromChest(chestBlock, itemTemplateJson) {
       let key = stack.getId()
       if (toRemove[key] && toRemove[key] > 0) {
         let removeCount = Math.min(toRemove[key], stack.getCount())
-        // Try extractItem or shrink the stack directly
         if (inv.extractItem) {
           inv.extractItem(i, removeCount, false)
         } else {
@@ -783,7 +984,6 @@ function playerHasItems(player, itemTemplateJson) {
   return getMissingPlayerItems(player, itemTemplateJson).length === 0
 }
 
-// Returns array of missing items from player inventory (with amounts)
 function getMissingPlayerItems(player, itemTemplateJson) {
   let template = JSON.parse(itemTemplateJson)
   let inv = player.getInventory()
@@ -873,7 +1073,6 @@ function addItemsToChest(chestBlock, itemTemplateJson) {
         return false
       }
     } else {
-      // Fallback: find empty slot or matching stack
       let inserted = false
       let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 27)
       for (let s = 0; s < slots && !inserted; s++) {
@@ -895,7 +1094,6 @@ function chestHasSpace(chestBlock, itemTemplateJson) {
   let inv = chestBlock.getInventory()
   if (!inv) return false
 
-  // Simple check: count empty slots vs items needed
   let emptySlots = 0
   let slots = inv.getSlots ? inv.getSlots() : (inv.size ? inv.size() : 27)
   for (let i = 0; i < slots; i++) {
@@ -924,49 +1122,12 @@ try {
   console.info("[KubeShop] FTB Chunks API not available (FTB Chunks not installed?): " + e)
 }
 
-// Track which players currently have bypass enabled (for cleanup)
-// This is persisted to server NBT so we can clean up after /reload
+// Track which players currently have bypass enabled (in-memory only, OK to lose on reload)
 let playersWithBypass = {}
-let needsBypassCleanup = true  // Always check on script load
-
-// Load bypass tracking from server persistent data
-function loadBypassData(server) {
-  try {
-    let rootNbt = getRootNbt(server)
-    if (rootNbt.contains(BYPASS_KEY)) {
-      let bypassNbt = rootNbt.getCompound(BYPASS_KEY)
-      let keys = bypassNbt.getAllKeys().toArray()
-      let result = {}
-      for (let i = 0; i < keys.length; i++) {
-        let uuid = keys[i]
-        result[uuid] = bypassNbt.getString(uuid)  // Username
-      }
-      return result
-    }
-  } catch(e) {
-    console.warn("[KubeShop] Could not load bypass data: " + e)
-  }
-  return {}
-}
-
-// Save bypass tracking to server persistent data
-function saveBypassData(server) {
-  try {
-    let rootNbt = getRootNbt(server)
-    let bypassNbt = NBT.compoundTag()
-    for (let uuid in playersWithBypass) {
-      bypassNbt.putString(uuid, playersWithBypass[uuid])
-    }
-    rootNbt.put(BYPASS_KEY, bypassNbt)
-  } catch(e) {
-    console.warn("[KubeShop] Could not save bypass data: " + e)
-  }
-}
 
 // Get FTB Chunks manager safely
 function getFTBChunksManager() {
   if (!ftbChunksAvailable || !FTBChunksAPI) {
-    console.warn("[KubeShop DEBUG] FTB Chunks not available: ftbChunksAvailable=" + ftbChunksAvailable)
     return null
   }
   try {
@@ -974,143 +1135,74 @@ function getFTBChunksManager() {
     if (api && api.isManagerLoaded()) {
       return api.getManager()
     }
-    console.warn("[KubeShop DEBUG] FTB Chunks API exists but manager not loaded")
   } catch(e) {
-    console.warn("[KubeShop DEBUG] Error getting FTB Chunks manager: " + e)
+    console.warn("[KubeShop] Error getting FTB Chunks manager: " + e)
   }
   return null
 }
 
 // Get proper Java UUID from player
 function getPlayerUUID(player) {
-  let playerName = player.getName().getString()
-
-  // Try different methods to get the UUID
   try {
-    // Method 1: getUUID() - standard Minecraft
     if (player.getUUID) {
-      let uuid = player.getUUID()
-      console.info("[KubeShop DEBUG] Got UUID via getUUID() for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
-      return uuid
+      return player.getUUID()
     }
-  } catch(e) {
-    console.warn("[KubeShop DEBUG] getUUID() failed for " + playerName + ": " + e)
-  }
+  } catch(e) {}
 
   try {
-    // Method 2: uuid property (KubeJS wrapper)
     if (player.uuid) {
-      let uuid = player.uuid
-      console.info("[KubeShop DEBUG] Got UUID via .uuid for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
-      return uuid
+      return player.uuid
     }
-  } catch(e) {
-    console.warn("[KubeShop DEBUG] .uuid failed for " + playerName + ": " + e)
-  }
+  } catch(e) {}
 
   try {
-    // Method 3: Parse from string UUID using Java
     let uuidStr = player.getStringUuid()
     let UUID = Java.loadClass('java.util.UUID')
-    let uuid = UUID.fromString(uuidStr)
-    console.info("[KubeShop DEBUG] Got UUID via fromString for " + playerName + ": " + uuid + " (type: " + typeof uuid + ")")
-    return uuid
-  } catch(e) {
-    console.warn("[KubeShop DEBUG] UUID.fromString failed for " + playerName + ": " + e)
-  }
+    return UUID.fromString(uuidStr)
+  } catch(e) {}
 
-  console.error("[KubeShop DEBUG] Could not get UUID for " + playerName)
   return null
 }
 
-// Enable bypass for a player (with tracking)
+// Enable bypass for a player
 function enableShopBypass(player) {
-  let playerName = player.getName().getString()
-  console.info("[KubeShop DEBUG] enableShopBypass called for " + playerName)
-
   let manager = getFTBChunksManager()
-  if (!manager) {
-    console.warn("[KubeShop DEBUG] Cannot enable bypass - manager is null")
-    return false
-  }
-  console.info("[KubeShop DEBUG] Got FTB Chunks manager: " + manager)
+  if (!manager) return false
 
   let uuid = getPlayerUUID(player)
   let uuidStr = player.getStringUuid()
 
-  if (!uuid) {
-    console.warn("[KubeShop DEBUG] Cannot enable bypass - UUID is null")
-    return false
-  }
-  console.info("[KubeShop DEBUG] Player UUID: " + uuid + ", String UUID: " + uuidStr)
+  if (!uuid) return false
 
-  // Check if bypass already enabled
-  let alreadyHasBypass = false
   try {
-    alreadyHasBypass = manager.getBypassProtection(uuid)
-    console.info("[KubeShop DEBUG] Current bypass status for " + playerName + ": " + alreadyHasBypass)
-  } catch(e) {
-    console.warn("[KubeShop DEBUG] Error checking existing bypass: " + e)
-  }
-
-  if (alreadyHasBypass) {
-    console.info("[KubeShop DEBUG] Player " + playerName + " already has bypass, skipping")
-    return false
-  }
-
-  // Try to set bypass
-  console.info("[KubeShop DEBUG] Calling setBypassProtection(true) for " + playerName)
-  try {
+    if (manager.getBypassProtection(uuid)) return false
     manager.setBypassProtection(uuid, true)
-    console.info("[KubeShop DEBUG] setBypassProtection called successfully")
+    if (manager.getBypassProtection(uuid)) {
+      playersWithBypass[uuidStr] = player.getName().getString()
+      return true
+    }
   } catch(e) {
-    console.error("[KubeShop DEBUG] Error setting bypass: " + e)
-    return false
+    console.error("[KubeShop] Error setting bypass: " + e)
   }
 
-  // Verify it was set
-  let result = false
-  try {
-    result = manager.getBypassProtection(uuid)
-    console.info("[KubeShop DEBUG] Verification - bypass is now: " + result)
-  } catch(e) {
-    console.error("[KubeShop DEBUG] Error verifying bypass: " + e)
-  }
-
-  if (result) {
-    playersWithBypass[uuidStr] = playerName
-    saveBypassData(player.getServer())
-    console.info("[KubeShop DEBUG] SUCCESS - Bypass enabled for " + playerName)
-  } else {
-    console.error("[KubeShop DEBUG] FAILED - setBypassProtection was called but getBypassProtection returns false for " + playerName)
-  }
-
-  return result
+  return false
 }
 
-// Disable bypass for a player (with tracking)
+// Disable bypass for a player
 function disableShopBypass(player) {
-  let playerName = player.getName().getString()
   let manager = getFTBChunksManager()
-  if (!manager) {
-    console.warn("[KubeShop DEBUG] Cannot disable bypass - manager is null")
-    return
-  }
+  if (!manager) return
 
   let uuid = getPlayerUUID(player)
   let uuidStr = player.getStringUuid()
 
-  // Only disable if we enabled it
   if (playersWithBypass[uuidStr] && uuid) {
-    console.info("[KubeShop DEBUG] Disabling bypass for " + playerName)
     try {
       manager.setBypassProtection(uuid, false)
-      console.info("[KubeShop DEBUG] setBypassProtection(false) called for " + playerName)
     } catch(e) {
-      console.error("[KubeShop DEBUG] Error disabling bypass: " + e)
+      console.error("[KubeShop] Error disabling bypass: " + e)
     }
     delete playersWithBypass[uuidStr]
-    saveBypassData(player.getServer())  // Persist to NBT for reload safety
   }
 }
 
@@ -1126,32 +1218,26 @@ function isSignWaxed(block) {
 }
 
 // Check if player is looking at a valid shop sign (must be waxed)
+// Uses lightweight cache to avoid DB queries every tick
 function getShopSignPlayerIsLookingAt(player) {
   try {
-    // Raycast 5 blocks max - KubeJS returns KubeRayTraceResult
     let hitResult = player.rayTrace(5, false)
     if (!hitResult) return null
 
-    // KubeJS rayTrace returns object with .block property if hit a block
     let block = hitResult.block
     if (!block) return null
 
-    // Must be a sign
     let blockId = block.getId()
     if (!blockId.includes('sign')) return null
 
-    // Must be waxed (non-waxed signs open text editor)
     if (!isSignWaxed(block)) return null
 
-    // Must be a registered shop
     let signKey = getBlockKey(block)
-    let shop = shopsCache[signKey]
 
-    if (!shop) return null
+    // Use cache instead of DB query
+    if (!isShopSignKey(signKey)) return null
 
-    // Only log when actually found a shop (to avoid spam)
-    console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " looking at shop sign at " + signKey)
-    return { block: block, signKey: signKey, shop: shop }
+    return { block: block, signKey: signKey }
   } catch(e) {
     return null
   }
@@ -1159,135 +1245,44 @@ function getShopSignPlayerIsLookingAt(player) {
 
 // Server tick - manage bypass protection for players looking at shop signs
 ServerEvents.tick(event => {
-  // Handle delayed bypass cleanup after reload
-  // We load from server NBT to know who had bypass enabled before reload
-  if (needsBypassCleanup) {
-    let manager = getFTBChunksManager()
-    if (manager) {
-      needsBypassCleanup = false  // Clear flag first to prevent repeated attempts
+  let tickCount = event.server.getTickCount()
 
-      // Load bypass data from server persistent data
-      playersWithBypass = loadBypassData(event.server)
-
-      if (Object.keys(playersWithBypass).length > 0) {
-        // Log who had bypass
-        let uuids = Object.keys(playersWithBypass)
-        console.info("[KubeShop] Found " + uuids.length + " player(s) with bypass leftover, cleaning up:")
-        for (let i = 0; i < uuids.length; i++) {
-          let uuidStr = uuids[i]
-          let name = playersWithBypass[uuidStr] || "Unknown"
-          console.info("[KubeShop]   - " + name + " (" + uuidStr + ")")
-        }
-
-        // Disable bypass for each
-        let cleanedUp = 0
-        for (let uuidStr in playersWithBypass) {
-          try {
-            let UUID = Java.loadClass('java.util.UUID')
-            let uuid = UUID.fromString(uuidStr)
-            if (manager.getBypassProtection(uuid)) {
-              manager.setBypassProtection(uuid, false)
-              cleanedUp++
-            }
-          } catch(e) {
-            console.warn("[KubeShop] Failed to disable bypass for " + uuidStr + ": " + e)
-          }
-        }
-
-        // Clear the tracking and save empty NBT
-        playersWithBypass = {}
-        saveBypassData(event.server)
-
-        if (cleanedUp > 0) {
-          console.info("[KubeShop] Disabled bypass for " + cleanedUp + " player(s) on reload")
-        }
-      }
-    }
-    // If manager still not available, flag stays true and we retry next tick
+  // Refresh shop sign keys cache periodically
+  if (tickCount - shopSignKeysCacheLastRefresh >= SHOP_CACHE_REFRESH_TICKS) {
+    refreshShopSignKeysCache()
+    shopSignKeysCacheLastRefresh = tickCount
   }
 
   // Only check every 2 ticks for responsiveness
-  if (event.server.getTickCount() % 2 !== 0) return
+  if (tickCount % 2 !== 0) return
 
   // Skip if FTB Chunks not available
   if (!ftbChunksAvailable) return
-
-  ensureDataLoaded(event.server)
 
   // Process all online players
   event.server.getPlayers().forEach(player => {
     let uuidStr = player.getStringUuid()
     let hasCurrentBypass = playersWithBypass[uuidStr] || false
 
-    // Check if player should have bypass (looking at waxed shop sign)
     let shopInfo = getShopSignPlayerIsLookingAt(player)
     let shouldHaveBypass = (shopInfo !== null)
 
-    // Update bypass state if changed
     if (shouldHaveBypass && !hasCurrentBypass) {
-      // Enable bypass - player is now looking at a shop sign
-      console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " should have bypass (looking at shop), enabling...")
       enableShopBypass(player)
     } else if (!shouldHaveBypass && hasCurrentBypass) {
-      // Disable bypass - player is no longer looking at a shop sign
-      console.info("[KubeShop DEBUG] Player " + player.getName().getString() + " should not have bypass, disabling...")
       disableShopBypass(player)
     }
   })
 
-  // Safety: Clean up bypass for any offline players (in case of disconnect)
+  // Safety: Clean up bypass for any offline players
   for (let uuidStr in playersWithBypass) {
     let stillOnline = false
     event.server.getPlayers().forEach(p => {
       if (p.getStringUuid() === uuidStr) stillOnline = true
     })
     if (!stillOnline) {
-      // Player disconnected, clean up
       delete playersWithBypass[uuidStr]
     }
-  }
-})
-
-// Load all data on server start
-ServerEvents.loaded(event => {
-  dataLoaded = false  // Reset flag so data reloads
-
-  // Clear in-memory caches to force fresh load from persistent data
-  balancesCache = {}
-  shopsCache = {}
-  historyCache = {}
-  playersWithBypass = {}
-  ensureDataLoaded(event.server)
-  console.info("[KubeShop] Loaded " + Object.keys(shopsCache).length + " shops")
-
-  // Initialize balances for all known players from profile cache
-  try {
-    let profileCache = event.server.getProfileCache()
-    if (profileCache) {
-      let initializedCount = 0
-      // Get all cached profiles using the load method
-      // load() returns Stream<GameProfileInfo>, where GameProfileInfo wraps GameProfile
-      let profiles = profileCache.load()
-      if (profiles && profiles.iterator) {
-        let iterator = profiles.iterator()
-        while (iterator.hasNext()) {
-          let profileInfo = iterator.next()
-          // GameProfileInfo has getProfile() method to get the actual GameProfile
-          let profile = profileInfo.getProfile ? profileInfo.getProfile() : profileInfo
-          let uuid = profile.getId().toString()
-          if (balancesCache[uuid] === undefined) {
-            balancesCache[uuid] = STARTING_BALANCE
-            saveBalance(event.server, uuid)
-            initializedCount++
-          }
-        }
-        if (initializedCount > 0) {
-          console.info("[KubeShop] Initialized balances for " + initializedCount + " new players")
-        }
-      }
-    }
-  } catch(e) {
-    console.warn("[KubeShop] Could not initialize all player balances: " + e)
   }
 })
 
@@ -1301,9 +1296,8 @@ PlayerEvents.loggedOut(event => {
   }
 })
 
-// Handle block breaking - cleanup shops and ownership
+// Handle block breaking - cleanup shops
 BlockEvents.broken(event => {
-  ensureDataLoaded(event.server)
   let blockKey = getBlockKey(event.block)
   let player = event.getEntity()
 
@@ -1318,14 +1312,13 @@ BlockEvents.broken(event => {
     }
   }
 
-  if (isChest(event.block)) {
-    for (let signKey in shopsCache) {
-      if (shopsCache[signKey].chestPos === blockKey) {
-        removeShop(event.server, signKey)
-        console.info("[KubeShop] Shop removed (chest broken)")
-        if (player) {
-          player.sendSystemMessage(Component.gold("Shop removed (chest destroyed)!"))
-        }
+  if (isContainer(event.block)) {
+    let signKeys = getShopsByChestPos(blockKey)
+    for (let i = 0; i < signKeys.length; i++) {
+      removeShop(event.server, signKeys[i])
+      console.info("[KubeShop] Shop removed (chest broken)")
+      if (player) {
+        player.sendSystemMessage(Component.gold("Shop removed (chest destroyed)!"))
       }
     }
   }
@@ -1339,21 +1332,13 @@ function depositCoinOnClick(player, item, depositAll) {
 
   if (!denom) return false
 
-  ensureDataLoaded(server)
-
   let countToDeposit = depositAll ? item.getCount() : 1
   let valueToDeposit = denom.value * countToDeposit
 
-  // Add to balance
   addBalance(server, pUuid, valueToDeposit)
-
-  // Remove coins from hand
   item.shrink(countToDeposit)
-
-  // Record history
   addHistoryEntry(server, pUuid, "deposit", valueToDeposit, null, countToDeposit + "x $" + denom.value + " coin" + (countToDeposit > 1 ? "s" : ""))
 
-  // Show message
   let newBalance = getBalance(server, pUuid)
   player.sendSystemMessage(
     Component.empty()
@@ -1367,7 +1352,7 @@ function depositCoinOnClick(player, item, depositAll) {
   return true
 }
 
-// Coin right-click on block - prevent default interaction, let ItemEvents handle deposit
+// Coin right-click on block - prevent default interaction
 BlockEvents.rightClicked(event => {
   let item = event.getItem()
   if (!item || item.isEmpty()) return
@@ -1375,7 +1360,6 @@ BlockEvents.rightClicked(event => {
   let denom = getCoinDenomFromStack(item)
   if (!denom) return
 
-  // Cancel block interaction (prevent any default behavior)
   event.cancel()
 })
 
@@ -1401,17 +1385,12 @@ BlockEvents.rightClicked(event => {
   let player = event.getEntity()
   let server = event.block.getLevel().getServer()
 
-  // Ensure data is loaded (handles /reload)
-  ensureDataLoaded(server)
-
   let signKey = getBlockKey(event.block)
   let existingShop = getShop(signKey)
   let isCrouching = player.isCrouching()
 
   if (isCrouching) {
-    // SHOP CREATION only (removal is done by breaking sign/chest)
     if (existingShop) {
-      // Shop already exists, show shop info on shift-click
       let infoTemplate = JSON.parse(existingShop.itemTemplate)
       let infoItemNames = []
       for (let i = 0; i < infoTemplate.length; i++) {
@@ -1425,7 +1404,6 @@ BlockEvents.rightClicked(event => {
       }
       let infoItemsStr = infoItemNames.join(", ")
 
-      // BUY = shop selling to users, SELL = shop buying from users
       let actionText = existingShop.type === "BUY" ? "selling" : "buying"
 
       player.sendSystemMessage(
@@ -1443,8 +1421,8 @@ BlockEvents.rightClicked(event => {
     if (!signData) return
 
     let attachedBlock = getAttachedBlock(event.block)
-    if (!attachedBlock || !isChest(attachedBlock)) {
-      player.sendSystemMessage(Component.red("Sign must be placed on a chest"))
+    if (!attachedBlock || !isContainer(attachedBlock)) {
+      player.sendSystemMessage(Component.red("Sign must be placed on a container"))
       event.cancel()
       return
     }
@@ -1469,13 +1447,11 @@ BlockEvents.rightClicked(event => {
     saveShop(server, signKey, shopData)
     updateSignForShop(event.block, signData.type, signData.price)
 
-    // Build item list for message
     let template = JSON.parse(itemTemplate)
     let itemNames = []
     for (let i = 0; i < template.length; i++) {
       let itemId = template[i].id
       let count = template[i].count
-      // Simplify: "minecraft:diamond_sword" -> "Diamond Sword"
       let simpleName = itemId.replace("minecraft:", "").replace(/_/g, " ")
       simpleName = simpleName.split(" ").map(function(word) {
         return word.charAt(0).toUpperCase() + word.slice(1)
@@ -1484,7 +1460,6 @@ BlockEvents.rightClicked(event => {
     }
     let itemsStr = itemNames.join(", ")
 
-    // BUY = shop selling to users, SELL = shop buying from users
     let actionText = signData.type === "BUY" ? "selling to users" : "buying from users"
 
     let msg = Component.empty()
@@ -1501,7 +1476,6 @@ BlockEvents.rightClicked(event => {
   // SHOP USAGE (not crouching)
   if (!existingShop) return
 
-  // Only waxed signs are valid shops (prevents interaction with non-finalized shops)
   if (!isSignWaxed(event.block)) return
 
   let chestPosStr = existingShop.chestPos
@@ -1513,7 +1487,7 @@ BlockEvents.rightClicked(event => {
   let level = event.block.getLevel()
   let chestBlock = level.getBlock(chestX, chestY, chestZ)
 
-  if (!chestBlock || !isChest(chestBlock)) {
+  if (!chestBlock || !isContainer(chestBlock)) {
     player.sendSystemMessage(Component.red("Shop chest not found"))
     return
   }
@@ -1540,7 +1514,6 @@ BlockEvents.rightClicked(event => {
     if (missingItems.length > 0) {
       player.sendSystemMessage(Component.red("Shop is out of stock"))
 
-      // Notify owner if online
       let ownerPlayer = server.getPlayer(ownerUuid)
       if (ownerPlayer) {
         let missingStr = missingItems.join(", ")
@@ -1561,7 +1534,6 @@ BlockEvents.rightClicked(event => {
     giveItemsToPlayer(player, itemTemplate)
     addBalance(server, ownerUuid, price)
 
-    // Build item names for message
     let template = JSON.parse(itemTemplate)
     let itemNames = []
     for (let i = 0; i < template.length; i++) {
@@ -1575,14 +1547,12 @@ BlockEvents.rightClicked(event => {
     }
     let itemsStr = itemNames.join(", ")
 
-    // Get owner name for history
     let ownerName = "Unknown"
     let ownerPlayer = server.getPlayer(ownerUuid)
     if (ownerPlayer) {
       ownerName = ownerPlayer.getName().getString()
     }
 
-    // Record history for buyer and shop owner
     addHistoryEntry(server, buyerUuid, "shop_buy", price, ownerName, itemsStr)
     addHistoryEntry(server, ownerUuid, "shop_sell", price, player.getName().getString(), itemsStr)
 
@@ -1622,7 +1592,6 @@ BlockEvents.rightClicked(event => {
     if (!hasBalance(server, ownerUuid, price)) {
       player.sendSystemMessage(Component.red("Shop owner cannot afford this purchase"))
 
-      // Notify owner if online
       let ownerPlayerBroke = server.getPlayer(ownerUuid)
       if (ownerPlayerBroke) {
         let brokeTemplate = JSON.parse(itemTemplate)
@@ -1654,7 +1623,6 @@ BlockEvents.rightClicked(event => {
     if (!chestHasSpace(chestBlock, itemTemplate)) {
       player.sendSystemMessage(Component.red("Shop chest is full"))
 
-      // Notify owner if online
       let ownerPlayerFull = server.getPlayer(ownerUuid)
       if (ownerPlayerFull) {
         let fullTemplate = JSON.parse(itemTemplate)
@@ -1687,7 +1655,6 @@ BlockEvents.rightClicked(event => {
     removeBalance(server, ownerUuid, price)
     addBalance(server, buyerUuid, price)
 
-    // Build item names for message
     let sellTemplate = JSON.parse(itemTemplate)
     let sellItemNames = []
     for (let i = 0; i < sellTemplate.length; i++) {
@@ -1701,15 +1668,12 @@ BlockEvents.rightClicked(event => {
     }
     let sellItemsStr = sellItemNames.join(", ")
 
-    // Get owner name for history
     let sellOwnerName = "Unknown"
     let ownerPlayer = server.getPlayer(ownerUuid)
     if (ownerPlayer) {
       sellOwnerName = ownerPlayer.getName().getString()
     }
 
-    // Record history for seller (player) and shop owner
-    // For SELL shop: player sells items TO shop, receives money
     addHistoryEntry(server, buyerUuid, "shop_sell", price, sellOwnerName, sellItemsStr)
     addHistoryEntry(server, ownerUuid, "shop_buy", price, player.getName().getString(), sellItemsStr)
 
@@ -1744,10 +1708,15 @@ ServerEvents.commandRegistry(event => {
   let Commands = event.getCommands()
   let Arguments = event.getArguments()
 
-  // /wallet - Main command with subcommands
   event.register(
     Commands.literal("wallet")
-      // /wallet (no args) - show help
+      .requires(src => {
+        if (!databaseAvailable) {
+          src.sendFailure(Component.red('[KubeShop] Database configuration is not loaded. Economy features are disabled.'))
+          return false
+        }
+        return true
+      })
       .executes(ctx => {
         let src = ctx.getSource()
         src.sendSystemMessage(Component.gold("=== Wallet Commands ==="))
@@ -1765,7 +1734,6 @@ ServerEvents.commandRegistry(event => {
         return 1
       })
 
-      // /wallet balance - Check your own balance
       .then(Commands.literal("balance")
         .executes(ctx => {
           let player = ctx.getSource().getPlayer()
@@ -1788,7 +1756,6 @@ ServerEvents.commandRegistry(event => {
         })
       )
 
-      // /wallet help - Show help
       .then(Commands.literal("help")
         .executes(ctx => {
           let src = ctx.getSource()
@@ -1803,7 +1770,7 @@ ServerEvents.commandRegistry(event => {
           src.sendSystemMessage(Component.yellow("/wallet deposit").append(Component.gray(" - Deposit all coins in inventory")))
           src.sendSystemMessage(Component.yellow("/wallet deposit <amount>").append(Component.gray(" - Deposit specific value from coins")))
           src.sendSystemMessage(Component.gold("--- Other ---"))
-            src.sendSystemMessage(Component.yellow("/wallet history").append(Component.gray(" - Transaction history")))
+          src.sendSystemMessage(Component.yellow("/wallet history").append(Component.gray(" - Transaction history")))
           src.sendSystemMessage(Component.yellow("/wallet shop help").append(Component.gray(" - Shop creation guide")))
           if (src.hasPermission(2)) {
             src.sendSystemMessage(Component.red("/wallet admin").append(Component.gray(" - Admin commands")))
@@ -1812,9 +1779,7 @@ ServerEvents.commandRegistry(event => {
         })
       )
 
-      // /wallet shop - Shop subcommands
       .then(Commands.literal("shop")
-        // /wallet shop (no args) - show shop help
         .executes(ctx => {
           let src = ctx.getSource()
           src.sendSystemMessage(Component.gold("=== Shop Commands ==="))
@@ -1822,7 +1787,6 @@ ServerEvents.commandRegistry(event => {
           return 1
         })
 
-        // /wallet shop help - Shop creation guide
         .then(Commands.literal("help")
           .executes(ctx => {
             let src = ctx.getSource()
@@ -1845,7 +1809,6 @@ ServerEvents.commandRegistry(event => {
         )
       )
 
-      // /wallet pay <player> <amount> - Send money to another player
       .then(Commands.literal("pay")
         .then(
           Commands.argument("recipient", Arguments.GAME_PROFILE.create(event))
@@ -1894,7 +1857,6 @@ ServerEvents.commandRegistry(event => {
                   removeBalance(payServer, senderUuid, payAmount)
                   addBalance(payServer, recipientUuid, payAmount)
 
-                  // Record history for both players
                   addHistoryEntry(payServer, senderUuid, "pay_sent", payAmount, recipientName, null)
                   addHistoryEntry(payServer, recipientUuid, "pay_received", payAmount, sender.getName().getString(), null)
 
@@ -1922,8 +1884,6 @@ ServerEvents.commandRegistry(event => {
         )
       )
 
-
-      // /wallet history - Show transaction history
       .then(Commands.literal("history")
         .executes(ctx => {
           let player = ctx.getSource().getPlayer()
@@ -1943,7 +1903,6 @@ ServerEvents.commandRegistry(event => {
             return 1
           }
 
-          // Show last 10 transactions
           let toShow = Math.min(history.length, 10)
           for (let i = 0; i < toShow; i++) {
             let entry = history[i]
@@ -1999,12 +1958,10 @@ ServerEvents.commandRegistry(event => {
         })
       )
 
-      // /wallet withdraw <amount> [denomination] - Withdraw coins from balance
       .then(Commands.literal("withdraw")
         .then(
           Commands.argument("amount", Arguments.INTEGER.create(event))
             .executes(ctx => {
-              // Withdraw with efficient coin split (no denomination specified)
               let player = ctx.getSource().getPlayer()
               if (player == null) {
                 ctx.getSource().sendFailure(Component.red("This command can only be used by players"))
@@ -2030,14 +1987,11 @@ ServerEvents.commandRegistry(event => {
                 return 0
               }
 
-              // Remove balance and give coins
               removeBalance(srv, pUuid, withdrawAmount)
               giveCoinsEfficient(player, withdrawAmount)
 
-              // Record history
               addHistoryEntry(srv, pUuid, "withdraw", withdrawAmount, null, "Coins withdrawn")
 
-              // Build breakdown message
               let remaining = withdrawAmount
               let parts = []
               for (let i = 0; i < COIN_DENOMINATIONS.length; i++) {
@@ -2062,7 +2016,6 @@ ServerEvents.commandRegistry(event => {
             .then(
               Commands.argument("denomination", Arguments.INTEGER.create(event))
                 .executes(ctx => {
-                  // Withdraw with specific denomination
                   let player = ctx.getSource().getPlayer()
                   if (player == null) {
                     ctx.getSource().sendFailure(Component.red("This command can only be used by players"))
@@ -2077,7 +2030,6 @@ ServerEvents.commandRegistry(event => {
                     return 0
                   }
 
-                  // Validate denomination
                   let validDenom = false
                   for (let i = 0; i < COIN_DENOMINATIONS.length; i++) {
                     if (COIN_DENOMINATIONS[i].value === denomination) {
@@ -2090,7 +2042,6 @@ ServerEvents.commandRegistry(event => {
                     return 0
                   }
 
-                  // Check if amount is divisible by denomination
                   if (withdrawAmount % denomination !== 0) {
                     ctx.getSource().sendFailure(
                       Component.empty()
@@ -2115,11 +2066,9 @@ ServerEvents.commandRegistry(event => {
                     return 0
                   }
 
-                  // Remove balance and give specific coins
                   removeBalance(srv, pUuid, withdrawAmount)
                   giveCoinsSpecific(player, withdrawAmount, denomination)
 
-                  // Record history
                   let coinCount = withdrawAmount / denomination
                   addHistoryEntry(srv, pUuid, "withdraw", withdrawAmount, null, coinCount + "x $" + denomination + " coins")
 
@@ -2137,10 +2086,8 @@ ServerEvents.commandRegistry(event => {
         )
       )
 
-      // /wallet deposit [amount] - Deposit coins to balance
       .then(Commands.literal("deposit")
         .executes(ctx => {
-          // Deposit all coins (no amount specified)
           let player = ctx.getSource().getPlayer()
           if (player == null) {
             ctx.getSource().sendFailure(Component.red("This command can only be used by players"))
@@ -2156,11 +2103,9 @@ ServerEvents.commandRegistry(event => {
             return 0
           }
 
-          // Remove all coins and add balance
           removeCoinsFromPlayer(player, coinInfo.total)
           addBalance(srv, pUuid, coinInfo.total)
 
-          // Record history
           addHistoryEntry(srv, pUuid, "deposit", coinInfo.total, null, "All coins deposited")
 
           player.sendSystemMessage(
@@ -2175,7 +2120,6 @@ ServerEvents.commandRegistry(event => {
         .then(
           Commands.argument("amount", Arguments.INTEGER.create(event))
             .executes(ctx => {
-              // Deposit specific amount
               let player = ctx.getSource().getPlayer()
               if (player == null) {
                 ctx.getSource().sendFailure(Component.red("This command can only be used by players"))
@@ -2202,7 +2146,6 @@ ServerEvents.commandRegistry(event => {
                 return 0
               }
 
-              // Check if exact payment is possible
               if (!canPayExactWithCoins(player, depositAmount)) {
                 ctx.getSource().sendFailure(
                   Component.empty()
@@ -2213,11 +2156,9 @@ ServerEvents.commandRegistry(event => {
                 return 0
               }
 
-              // Remove coins and add balance
               removeCoinsFromPlayer(player, depositAmount)
               addBalance(srv, pUuid, depositAmount)
 
-              // Record history
               addHistoryEntry(srv, pUuid, "deposit", depositAmount, null, "Coins deposited")
 
               player.sendSystemMessage(
@@ -2232,11 +2173,9 @@ ServerEvents.commandRegistry(event => {
         )
       )
 
-      // /wallet admin - Admin subcommands
       .then(Commands.literal("admin")
         .requires(src => src.hasPermission(2))
 
-        // /wallet admin (no args) - show admin help
         .executes(ctx => {
           let src = ctx.getSource()
           src.sendSystemMessage(Component.gold("=== Wallet Admin Commands ==="))
@@ -2249,7 +2188,6 @@ ServerEvents.commandRegistry(event => {
           return 1
         })
 
-        // /wallet admin getbalance <player>
         .then(Commands.literal("getbalance")
           .then(
             Commands.argument("player", Arguments.GAME_PROFILE.create(event))
@@ -2280,7 +2218,6 @@ ServerEvents.commandRegistry(event => {
           )
         )
 
-        // /wallet admin setbalance <player> <amount>
         .then(Commands.literal("setbalance")
           .then(
             Commands.argument("player", Arguments.GAME_PROFILE.create(event))
@@ -2309,7 +2246,6 @@ ServerEvents.commandRegistry(event => {
                     let oldBal = getBalance(srv, pUuid)
                     setBalance(srv, pUuid, amt)
 
-                    // Record in history
                     addHistoryEntry(srv, pUuid, "admin_set", amt, "Admin", "Balance set from " + formatBalance(oldBal))
 
                     let msg = Component.empty()
@@ -2325,7 +2261,6 @@ ServerEvents.commandRegistry(event => {
           )
         )
 
-        // /wallet admin addbalance <player> <amount>
         .then(Commands.literal("addbalance")
           .then(
             Commands.argument("player", Arguments.GAME_PROFILE.create(event))
@@ -2355,7 +2290,6 @@ ServerEvents.commandRegistry(event => {
                     addBalance(srv, pUuid, amt)
                     let newBal = getBalance(srv, pUuid)
 
-                    // Record in history
                     addHistoryEntry(srv, pUuid, "admin_add", amt, "Admin", null)
 
                     let msg = Component.empty()
@@ -2376,7 +2310,6 @@ ServerEvents.commandRegistry(event => {
           )
         )
 
-        // /wallet admin subtractbalance <player> <amount>
         .then(Commands.literal("subtractbalance")
           .then(
             Commands.argument("player", Arguments.GAME_PROFILE.create(event))
@@ -2420,7 +2353,6 @@ ServerEvents.commandRegistry(event => {
                     removeBalance(srv, pUuid, amt)
                     let newBal = getBalance(srv, pUuid)
 
-                    // Record in history
                     addHistoryEntry(srv, pUuid, "admin_subtract", amt, "Admin", null)
 
                     let msg = Component.empty()
@@ -2441,7 +2373,6 @@ ServerEvents.commandRegistry(event => {
           )
         )
 
-        // /wallet admin history <player> - View player's transaction history
         .then(Commands.literal("history")
           .then(
             Commands.argument("player", Arguments.GAME_PROFILE.create(event))
@@ -2471,7 +2402,6 @@ ServerEvents.commandRegistry(event => {
                   return 1
                 }
 
-                // Show last 15 transactions for admin
                 let toShow = Math.min(history.length, 15)
                 for (let i = 0; i < toShow; i++) {
                   let entry = history[i]
@@ -2521,18 +2451,15 @@ ServerEvents.commandRegistry(event => {
           )
         )
 
-        // /wallet admin shop - Shop admin subcommands
         .then(Commands.literal("shop")
-          // /wallet admin shop list [player] - List all shops or shops by player
           .then(Commands.literal("list")
             .executes(ctx => {
-              // List all shops
               let srv = ctx.getSource().getServer()
-              ensureDataLoaded(srv)
+              let shops = getAllShops()
 
               ctx.getSource().sendSystemMessage(Component.gold("=== All Shops ==="))
 
-              let shopKeys = Object.keys(shopsCache)
+              let shopKeys = Object.keys(shops)
               if (shopKeys.length === 0) {
                 ctx.getSource().sendSystemMessage(Component.gray("No shops registered"))
                 return 1
@@ -2540,16 +2467,13 @@ ServerEvents.commandRegistry(event => {
 
               for (let i = 0; i < shopKeys.length; i++) {
                 let signKey = shopKeys[i]
-                let shop = shopsCache[signKey]
+                let shop = shops[signKey]
 
-                // Parse position from key: x_y_z_dimension
                 let posParts = signKey.split("_")
                 let x = posParts[0]
                 let y = posParts[1]
                 let z = posParts[2]
-                let dim = posParts.slice(3).join("_")
 
-                // Get owner name
                 let ownerName = "Unknown"
                 let ownerPlayer = srv.getPlayer(shop.owner)
                 if (ownerPlayer) {
@@ -2568,7 +2492,6 @@ ServerEvents.commandRegistry(event => {
                   }
                 }
 
-                // Get item names
                 let template = JSON.parse(shop.itemTemplate)
                 let itemNames = []
                 for (let j = 0; j < template.length; j++) {
@@ -2584,15 +2507,12 @@ ServerEvents.commandRegistry(event => {
                   itemsStr = itemsStr.substring(0, 27) + "..."
                 }
 
-                // Build clickable teleport command
                 let tpCmd = "/tp @s " + x + " " + y + " " + z
 
-                // Create clickable teleport link
                 let tpLink = Component.lightPurple("[TP]")
                   .clickRunCommand(tpCmd)
                   .hover(Component.gray("Click to teleport to " + x + ", " + y + ", " + z))
 
-                // Create message with coordinates
                 let shopMsg = Component.empty()
                   .append(Component.yellow("[" + shop.type + "] "))
                   .append(Component.white(itemsStr))
@@ -2621,7 +2541,7 @@ ServerEvents.commandRegistry(event => {
                   }
 
                   let srv = ctx.getSource().getServer()
-                  ensureDataLoaded(srv)
+                  let shops = getAllShops()
 
                   let prof = profileArray[0]
                   let pUuid = prof.getId().toString()
@@ -2634,18 +2554,16 @@ ServerEvents.commandRegistry(event => {
                   )
 
                   let count = 0
-                  for (let signKey in shopsCache) {
-                    let shop = shopsCache[signKey]
+                  for (let signKey in shops) {
+                    let shop = shops[signKey]
                     if (shop.owner !== pUuid) continue
                     count++
 
-                    // Parse position from key
                     let posParts = signKey.split("_")
                     let x = posParts[0]
                     let y = posParts[1]
                     let z = posParts[2]
 
-                    // Get item names
                     let template = JSON.parse(shop.itemTemplate)
                     let itemNames = []
                     for (let j = 0; j < template.length; j++) {
@@ -2661,10 +2579,8 @@ ServerEvents.commandRegistry(event => {
                       itemsStr = itemsStr.substring(0, 27) + "..."
                     }
 
-                    // Build clickable teleport command
                     let tpCmd = "/tp @s " + x + " " + y + " " + z
 
-                    // Create clickable teleport link
                     let tpLink = Component.lightPurple("[TP]")
                       .clickRunCommand(tpCmd)
                       .hover(Component.gray("Click to teleport to " + x + ", " + y + ", " + z))
@@ -2696,4 +2612,4 @@ ServerEvents.commandRegistry(event => {
 
 })
 
-console.info("[KubeShop] Economy & Shop system loaded")
+console.info("[KubeShop] Economy & Shop system loaded (MySQL version)")
