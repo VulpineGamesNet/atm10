@@ -1,11 +1,114 @@
-// KubeVote - Voting System with Rewards, Streaks, and Leaderboard
+// KubeVote - Voting System with Rewards, Streaks, and Leaderboard (MySQL Version)
 // Integrates with external Votifier service via /kubevote process command
+
+// ============================================================================
+// MYSQL CONFIGURATION - Read from config file
+// ============================================================================
+
+// Load config from kubejs/config/kubevote.json
+let voteDbConfig = {}
+try {
+  voteDbConfig = JsonIO.read('kubejs/config/kubevote.json') || {}
+} catch (e) {
+  console.warn('[KubeVote] Could not load config file, using defaults: ' + e)
+}
+
+const VOTE_DB_HOST = voteDbConfig.host || 'localhost'
+const VOTE_DB_PORT = parseInt(voteDbConfig.port || '3306')
+const VOTE_DB_NAME = voteDbConfig.database || 'minecraft'
+const VOTE_DB_USER = voteDbConfig.user || 'root'
+const VOTE_DB_PASS = voteDbConfig.password || ''
+
+// ============================================================================
+// MYSQL CONNECTION
+// ============================================================================
+
+let VoteSqlTypes = Java.loadClass('java.sql.Types')
+
+// Use MySQL driver directly to bypass DriverManager restrictions
+let VoteMysqlDriver = Java.loadClass('com.mysql.cj.jdbc.Driver')
+let voteMysqlDriver = new VoteMysqlDriver()
+
+function getVoteConnection() {
+  let url = 'jdbc:mysql://' + VOTE_DB_HOST + ':' + VOTE_DB_PORT + '/' + VOTE_DB_NAME +
+    '?user=' + encodeURIComponent(VOTE_DB_USER) +
+    '&password=' + encodeURIComponent(VOTE_DB_PASS) +
+    '&autoReconnect=true'
+  return voteMysqlDriver.connect(url, null)
+}
+
+function voteCloseQuietly(resource) {
+  if (resource) {
+    try { resource.close() } catch(e) {}
+  }
+}
+
+// Track database availability
+let voteDatabaseAvailable = false
+
+// Initialize database tables on script load
+function initVoteDatabase() {
+  let conn = null
+  let stmt = null
+  try {
+    console.info('[KubeVote] Connecting to database at ' + VOTE_DB_HOST + ':' + VOTE_DB_PORT + '/' + VOTE_DB_NAME + '...')
+    conn = getVoteConnection()
+    stmt = conn.createStatement()
+
+    // Create players table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubevote_players (' +
+      '  uuid VARCHAR(36) PRIMARY KEY,' +
+      '  streak_count INT NOT NULL DEFAULT 0,' +
+      '  streak_last_date VARCHAR(10),' +
+      '  total_votes INT NOT NULL DEFAULT 0,' +
+      '  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' +
+      ')'
+    )
+
+    // Create site votes table (last vote timestamps per site)
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubevote_site_votes (' +
+      '  uuid VARCHAR(36) NOT NULL,' +
+      '  site_id VARCHAR(100) NOT NULL,' +
+      '  last_vote BIGINT NOT NULL,' +
+      '  PRIMARY KEY (uuid, site_id)' +
+      ')'
+    )
+
+    // Create leaderboard table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS kubevote_leaderboard (' +
+      '  month VARCHAR(7) NOT NULL,' +
+      '  uuid VARCHAR(36) NOT NULL,' +
+      '  votes INT NOT NULL DEFAULT 0,' +
+      '  PRIMARY KEY (month, uuid)' +
+      ')'
+    )
+
+    voteDatabaseAvailable = true
+    console.info('[KubeVote] Database tables initialized successfully')
+  } catch(e) {
+    voteDatabaseAvailable = false
+    console.error('[KubeVote] ========================================')
+    console.error('[KubeVote] FAILED TO CONNECT TO DATABASE!')
+    console.error('[KubeVote] Error: ' + e)
+    console.error('[KubeVote] Host: ' + VOTE_DB_HOST + ':' + VOTE_DB_PORT + '/' + VOTE_DB_NAME)
+    console.error('[KubeVote] User: ' + VOTE_DB_USER)
+    console.error('[KubeVote] KubeVote features will be DISABLED')
+    console.error('[KubeVote] ========================================')
+  } finally {
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
+  }
+}
+
+// Initialize database on script load
+initVoteDatabase()
 
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-
-const VOTE_ROOT_KEY = "kubevote"
 
 // Voting sites configuration
 // id: must match the service name sent by voting sites
@@ -37,7 +140,7 @@ const VOTING_SITES = [
     cooldown: 86400000
   },
   {
-    id: "minecraft-server-list.com",
+    id: "MCSL",
     name: "MC Server List",
     url: "https://minecraft-server-list.com/server/516945/",
     cooldown: 86400000
@@ -59,11 +162,11 @@ const VOTING_SITES = [
 
 // Reward configuration - Physical coins (gold_nugget with custom_model_data)
 // Base reward is 1x $100 coin, streak multipliers add more coins
-// Half multipliers (1.5x, 2.5x) give $100 + $50 coins
+// Remainder is given as $10 coins
 const STREAK_BONUSES = [
-  { days: 3, multiplier: 1.5, name: "3-day streak" },    // 1x $100 + 1x $50 = $150
+  { days: 3, multiplier: 1.5, name: "3-day streak" },    // 1x $100 + 5x $10 = $150
   { days: 7, multiplier: 2.0, name: "Weekly streak" },   // 2x $100 = $200
-  { days: 14, multiplier: 2.5, name: "2-week streak" },  // 2x $100 + 1x $50 = $250
+  { days: 14, multiplier: 2.5, name: "2-week streak" },  // 2x $100 + 5x $10 = $250
   { days: 30, multiplier: 3.0, name: "Monthly streak" }  // 3x $100 = $300
 ]
 
@@ -76,16 +179,16 @@ const COIN_100 = {
   lore: '{"text":"Worth $100","color":"gray","italic":false}'
 }
 
-const COIN_50 = {
+const COIN_10 = {
   id: "minecraft:gold_nugget",
-  customModelData: 719050,
-  value: 50,
+  customModelData: 719010,
+  value: 10,
   name: '{"text":"Coin","color":"green","italic":false}',
-  lore: '{"text":"Worth $50","color":"gray","italic":false}'
+  lore: '{"text":"Worth $10","color":"gray","italic":false}'
 }
 
 // ============================================================================
-// DATA MANAGEMENT
+// DATA MANAGEMENT - MySQL Functions
 // ============================================================================
 
 let voteDataCache = {}
@@ -93,123 +196,207 @@ let leaderboardCache = { month: "", votes: {} }
 let dataLoaded = false
 let claimQueue = []  // Queue for pending claim requests
 
-function getRootNbt(server) {
-  if (!server.persistentData.contains(VOTE_ROOT_KEY)) {
-    server.persistentData.put(VOTE_ROOT_KEY, NBT.compoundTag())
-  }
-  return server.persistentData.getCompound(VOTE_ROOT_KEY)
-}
-
 function ensureDataLoaded(server) {
+  if (!voteDatabaseAvailable) return
   if (dataLoaded) return
 
-  console.info("[KubeVote] Loading data...")
+  console.info("[KubeVote] Loading data from database...")
   loadVoteData(server)
   loadLeaderboard(server)
   dataLoaded = true
 }
 
 function loadVoteData(server) {
-  let rootNbt = getRootNbt(server)
+  if (!voteDatabaseAvailable) return
 
-  if (!rootNbt.contains("players")) {
-    rootNbt.put("players", NBT.compoundTag())
-  }
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getVoteConnection()
+    voteDataCache = {}
 
-  voteDataCache = {}
-  let playersNbt = rootNbt.getCompound("players")
-  let keys = playersNbt.getAllKeys().toArray()
+    // Load player data
+    stmt = conn.prepareStatement('SELECT * FROM kubevote_players')
+    rs = stmt.executeQuery()
 
-  for (let i = 0; i < keys.length; i++) {
-    let uuid = keys[i]
-    let playerNbt = playersNbt.getCompound(uuid)
+    let playerCount = 0
+    while (rs.next()) {
+      let uuid = rs.getString('uuid')
+      voteDataCache[uuid] = {
+        lastVotes: {},
+        streak: {
+          count: rs.getInt('streak_count'),
+          lastDate: rs.getString('streak_last_date') || ""
+        },
+        totalVotes: rs.getInt('total_votes')
+      }
+      playerCount++
+    }
+    voteCloseQuietly(rs)
+    voteCloseQuietly(stmt)
 
-    let lastVotes = {}
-    if (playerNbt.contains("lastVotes")) {
-      let lastVotesNbt = playerNbt.getCompound("lastVotes")
-      let siteKeys = lastVotesNbt.getAllKeys().toArray()
-      for (let j = 0; j < siteKeys.length; j++) {
-        lastVotes[siteKeys[j]] = lastVotesNbt.getLong(siteKeys[j])
+    // Load site votes for each player
+    stmt = conn.prepareStatement('SELECT * FROM kubevote_site_votes')
+    rs = stmt.executeQuery()
+
+    while (rs.next()) {
+      let uuid = rs.getString('uuid')
+      let siteId = rs.getString('site_id')
+      let lastVote = rs.getLong('last_vote')
+
+      if (voteDataCache[uuid]) {
+        voteDataCache[uuid].lastVotes[siteId] = lastVote
       }
     }
 
-    voteDataCache[uuid] = {
-      lastVotes: lastVotes,
-      streak: {
-        count: playerNbt.contains("streakCount") ? playerNbt.getInt("streakCount") : 0,
-        lastDate: playerNbt.contains("streakLastDate") ? playerNbt.getString("streakLastDate") : ""
-      },
-      totalVotes: playerNbt.contains("totalVotes") ? playerNbt.getInt("totalVotes") : 0
-    }
+    console.info("[KubeVote] Loaded vote data for " + playerCount + " players")
+  } catch(e) {
+    console.error('[KubeVote] loadVoteData error: ' + e)
+  } finally {
+    voteCloseQuietly(rs)
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
   }
-
-  console.info("[KubeVote] Loaded vote data for " + keys.length + " players")
 }
 
 function savePlayerVoteData(server, uuid) {
-  let rootNbt = getRootNbt(server)
-  if (!rootNbt.contains("players")) {
-    rootNbt.put("players", NBT.compoundTag())
-  }
+  if (!voteDatabaseAvailable) return
 
-  let playersNbt = rootNbt.getCompound("players")
-  let playerNbt = NBT.compoundTag()
   let data = voteDataCache[uuid]
-
   if (!data) return
 
-  // Save lastVotes (for display purposes)
-  let lastVotesNbt = NBT.compoundTag()
-  for (let siteId in data.lastVotes) {
-    lastVotesNbt.putLong(siteId, data.lastVotes[siteId])
+  let conn = null
+  let stmt = null
+  try {
+    conn = getVoteConnection()
+
+    // Upsert player data
+    stmt = conn.prepareStatement(
+      'INSERT INTO kubevote_players (uuid, streak_count, streak_last_date, total_votes) ' +
+      'VALUES (?, ?, ?, ?) ' +
+      'ON DUPLICATE KEY UPDATE streak_count = ?, streak_last_date = ?, total_votes = ?'
+    )
+    stmt.setString(1, uuid)
+    stmt.setInt(2, data.streak.count)
+    stmt.setString(3, data.streak.lastDate)
+    stmt.setInt(4, data.totalVotes)
+    stmt.setInt(5, data.streak.count)
+    stmt.setString(6, data.streak.lastDate)
+    stmt.setInt(7, data.totalVotes)
+    stmt.executeUpdate()
+    voteCloseQuietly(stmt)
+
+    // Upsert site votes
+    for (let siteId in data.lastVotes) {
+      stmt = conn.prepareStatement(
+        'INSERT INTO kubevote_site_votes (uuid, site_id, last_vote) ' +
+        'VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE last_vote = ?'
+      )
+      stmt.setString(1, uuid)
+      stmt.setString(2, siteId)
+      stmt.setLong(3, data.lastVotes[siteId])
+      stmt.setLong(4, data.lastVotes[siteId])
+      stmt.executeUpdate()
+      voteCloseQuietly(stmt)
+    }
+  } catch(e) {
+    console.error('[KubeVote] savePlayerVoteData error: ' + e)
+  } finally {
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
   }
-  playerNbt.put("lastVotes", lastVotesNbt)
-
-  // Save streak
-  playerNbt.putInt("streakCount", data.streak.count)
-  playerNbt.putString("streakLastDate", data.streak.lastDate)
-
-  // Save total
-  playerNbt.putInt("totalVotes", data.totalVotes)
-
-  playersNbt.put(uuid, playerNbt)
 }
 
 function loadLeaderboard(server) {
-  let rootNbt = getRootNbt(server)
+  if (!voteDatabaseAvailable) return
 
-  if (!rootNbt.contains("leaderboard")) {
-    rootNbt.put("leaderboard", NBT.compoundTag())
-  }
+  let currentMonth = getCurrentMonthString()
+  leaderboardCache = { month: currentMonth, votes: {} }
 
-  let lbNbt = rootNbt.getCompound("leaderboard")
-  leaderboardCache = {
-    month: lbNbt.contains("month") ? lbNbt.getString("month") : "",
-    votes: {}
-  }
+  let conn = null
+  let stmt = null
+  let rs = null
+  try {
+    conn = getVoteConnection()
+    stmt = conn.prepareStatement('SELECT uuid, votes FROM kubevote_leaderboard WHERE month = ?')
+    stmt.setString(1, currentMonth)
+    rs = stmt.executeQuery()
 
-  if (lbNbt.contains("votes")) {
-    let votesNbt = lbNbt.getCompound("votes")
-    let keys = votesNbt.getAllKeys().toArray()
-    for (let i = 0; i < keys.length; i++) {
-      leaderboardCache.votes[keys[i]] = votesNbt.getInt(keys[i])
+    while (rs.next()) {
+      leaderboardCache.votes[rs.getString('uuid')] = rs.getInt('votes')
     }
+
+    console.info("[KubeVote] Loaded leaderboard for " + currentMonth + " (" + Object.keys(leaderboardCache.votes).length + " entries)")
+  } catch(e) {
+    console.error('[KubeVote] loadLeaderboard error: ' + e)
+  } finally {
+    voteCloseQuietly(rs)
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
   }
 }
 
 function saveLeaderboard(server) {
-  let rootNbt = getRootNbt(server)
-  let lbNbt = NBT.compoundTag()
+  if (!voteDatabaseAvailable) return
 
-  lbNbt.putString("month", leaderboardCache.month)
+  let conn = null
+  let stmt = null
+  try {
+    conn = getVoteConnection()
 
-  let votesNbt = NBT.compoundTag()
-  for (let uuid in leaderboardCache.votes) {
-    votesNbt.putInt(uuid, leaderboardCache.votes[uuid])
+    for (let uuid in leaderboardCache.votes) {
+      stmt = conn.prepareStatement(
+        'INSERT INTO kubevote_leaderboard (month, uuid, votes) ' +
+        'VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE votes = ?'
+      )
+      stmt.setString(1, leaderboardCache.month)
+      stmt.setString(2, uuid)
+      stmt.setInt(3, leaderboardCache.votes[uuid])
+      stmt.setInt(4, leaderboardCache.votes[uuid])
+      stmt.executeUpdate()
+      voteCloseQuietly(stmt)
+    }
+  } catch(e) {
+    console.error('[KubeVote] saveLeaderboard error: ' + e)
+  } finally {
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
   }
-  lbNbt.put("votes", votesNbt)
+}
 
-  rootNbt.put("leaderboard", lbNbt)
+function deletePlayerVoteData(server, uuid) {
+  if (!voteDatabaseAvailable) return
+
+  let conn = null
+  let stmt = null
+  try {
+    conn = getVoteConnection()
+
+    // Delete from site_votes
+    stmt = conn.prepareStatement('DELETE FROM kubevote_site_votes WHERE uuid = ?')
+    stmt.setString(1, uuid)
+    stmt.executeUpdate()
+    voteCloseQuietly(stmt)
+
+    // Delete from players
+    stmt = conn.prepareStatement('DELETE FROM kubevote_players WHERE uuid = ?')
+    stmt.setString(1, uuid)
+    stmt.executeUpdate()
+    voteCloseQuietly(stmt)
+
+    // Delete from leaderboard (all months)
+    stmt = conn.prepareStatement('DELETE FROM kubevote_leaderboard WHERE uuid = ?')
+    stmt.setString(1, uuid)
+    stmt.executeUpdate()
+  } catch(e) {
+    console.error('[KubeVote] deletePlayerVoteData error: ' + e)
+  } finally {
+    voteCloseQuietly(stmt)
+    voteCloseQuietly(conn)
+  }
 }
 
 function ensurePlayerData(uuid) {
@@ -302,28 +489,28 @@ function calculateCoinReward(multiplier) {
   // Multiplier determines total value: 1.0 = $100, 1.5 = $150, 2.0 = $200, etc.
   let totalValue = Math.round(100 * multiplier)
 
-  // Calculate how many $100 coins and $50 coins to give
+  // Calculate how many $100 coins and $10 coins to give
   let coins100 = Math.floor(totalValue / 100)
   let remainder = totalValue % 100
 
-  // If remainder is 50 or more, give a $50 coin
-  let coins50 = remainder >= 50 ? 1 : 0
+  // Give $10 coins for the remainder
+  let coins10 = Math.floor(remainder / 10)
 
   return {
     coins100: coins100,
-    coins50: coins50,
-    totalValue: (coins100 * 100) + (coins50 * 50)
+    coins10: coins10,
+    totalValue: (coins100 * 100) + (coins10 * 10)
   }
 }
 
-function giveCoinsToPlayer(player, coins100, coins50) {
+function giveCoinsToPlayer(player, coins100, coins10) {
   if (coins100 > 0) {
     let item100 = createCoinItem(COIN_100, coins100)
     player.give(item100)
   }
-  if (coins50 > 0) {
-    let item50 = createCoinItem(COIN_50, coins50)
-    player.give(item50)
+  if (coins10 > 0) {
+    let item10 = createCoinItem(COIN_10, coins10)
+    player.give(item10)
   }
   // Play reward sound
   playRewardSound(player)
@@ -338,13 +525,13 @@ function playRewardSound(player) {
   })
 }
 
-function formatCoinReward(coins100, coins50) {
+function formatCoinReward(coins100, coins10) {
   let parts = []
   if (coins100 > 0) {
     parts.push(coins100 + "x $100")
   }
-  if (coins50 > 0) {
-    parts.push(coins50 + "x $50")
+  if (coins10 > 0) {
+    parts.push(coins10 + "x $10")
   }
   return parts.join(" + ")
 }
@@ -410,7 +597,7 @@ function processVote(server, username, serviceId) {
   saveLeaderboard(server)
 
   // Give reward - physical coins
-  giveCoinsToPlayer(player, coinReward.coins100, coinReward.coins50)
+  giveCoinsToPlayer(player, coinReward.coins100, coinReward.coins10)
 
   // Notify player
   player.tell(Component.gold("★ ").append(Component.yellow("Vote Reward")).append(Component.gold(" ★")))
@@ -426,12 +613,12 @@ function processVote(server, username, serviceId) {
     rewardMsg.append(Component.blue(coinReward.coins100 + "x "))
       .append(Component.gold("$100 Coin"))
   }
-  if (coinReward.coins100 > 0 && coinReward.coins50 > 0) {
+  if (coinReward.coins100 > 0 && coinReward.coins10 > 0) {
     rewardMsg.append(Component.gray(" + "))
   }
-  if (coinReward.coins50 > 0) {
-    rewardMsg.append(Component.green(coinReward.coins50 + "x "))
-      .append(Component.darkGreen("$50 Coin"))
+  if (coinReward.coins10 > 0) {
+    rewardMsg.append(Component.green(coinReward.coins10 + "x "))
+      .append(Component.darkGreen("$10 Coin"))
   }
   player.tell(rewardMsg)
 
@@ -455,10 +642,10 @@ function processVote(server, username, serviceId) {
       .append(Component.yellow(data.totalVotes.toString()))
   )
 
-  let coinDisplay = formatCoinReward(coinReward.coins100, coinReward.coins50)
-  console.info("[KubeVote] Processed vote from " + playerName + " for " + site.name + " - reward: " + coinDisplay + " ($" + coinReward.totalValue + ") (streak: " + data.streak.count + ")")
+  let coinDisplay = formatCoinReward(coinReward.coins100, coinReward.coins10)
+  console.info("[KubeVote] Processed vote from " + playerName + " for " + site.name + " - reward: " + coinDisplay + " ($" + coinReward.totalValue + ") (streak: " + data.streak.count + " day" + (data.streak.count !== 1 ? "s" : "") + ")")
 
-  return { success: true, coins100: coinReward.coins100, coins50: coinReward.coins50, value: coinReward.totalValue, streak: data.streak.count }
+  return { success: true, coins100: coinReward.coins100, coins10: coinReward.coins10, value: coinReward.totalValue, streak: data.streak.count }
 }
 
 // ============================================================================
@@ -484,6 +671,13 @@ ServerEvents.commandRegistry(event => {
   // /vote - Show voting sites list
   event.register(
     Commands.literal("vote")
+      .requires(src => {
+        if (!voteDatabaseAvailable) {
+          src.sendFailure(Component.red('[KubeVote] Database configuration is not loaded. Vote features are disabled.'))
+          return false
+        }
+        return true
+      })
       .executes(ctx => {
         let src = ctx.getSource()
         let player = src.getPlayer()
@@ -512,8 +706,8 @@ ServerEvents.commandRegistry(event => {
           let siteMsg = Component.empty()
 
           if (timeUntilReady <= 0) {
-            // Ready to vote - green with clickable link
-            siteMsg.append(Component.green("✓ "))
+            // Ready to vote - needs attention, clickable link
+            siteMsg.append(Component.red("✗ "))
               .append(
                 Component.green(site.name)
                   .underlined()
@@ -521,10 +715,10 @@ ServerEvents.commandRegistry(event => {
                   .hover(Component.yellow("Click to vote!"))
               )
           } else {
-            // On cooldown - red with time remaining
-            siteMsg.append(Component.red("✗ "))
+            // Already voted - checkmark with time remaining
+            siteMsg.append(Component.green("✓ "))
               .append(Component.gray(site.name))
-              .append(Component.red(" (" + formatTimeRemaining(timeUntilReady) + ")"))
+              .append(Component.gray(" (" + formatTimeRemaining(timeUntilReady) + ")"))
           }
 
           src.sendSystemMessage(siteMsg)
@@ -553,12 +747,12 @@ ServerEvents.commandRegistry(event => {
           rewardLine.append(Component.blue(coinReward.coins100 + "x "))
             .append(Component.gold("$100"))
         }
-        if (coinReward.coins100 > 0 && coinReward.coins50 > 0) {
+        if (coinReward.coins100 > 0 && coinReward.coins10 > 0) {
           rewardLine.append(Component.gray(" + "))
         }
-        if (coinReward.coins50 > 0) {
-          rewardLine.append(Component.green(coinReward.coins50 + "x "))
-            .append(Component.darkGreen("$50"))
+        if (coinReward.coins10 > 0) {
+          rewardLine.append(Component.green(coinReward.coins10 + "x "))
+            .append(Component.darkGreen("$10"))
         }
         rewardLine.append(Component.gray(" = "))
           .append(Component.green("$" + coinReward.totalValue))
@@ -692,7 +886,13 @@ ServerEvents.commandRegistry(event => {
   // /kubevote - Internal commands for Votifier service
   event.register(
     Commands.literal("kubevote")
-      .requires(src => src.hasPermission(2))
+      .requires(src => {
+        if (!voteDatabaseAvailable) {
+          src.sendFailure(Component.red('[KubeVote] Database configuration is not loaded. Vote features are disabled.'))
+          return false
+        }
+        return src.hasPermission(2)
+      })
 
       // /kubevote claimqueue - Get and clear pending claim requests (polled by votifier)
       .then(Commands.literal("claimqueue")
@@ -731,20 +931,26 @@ ServerEvents.commandRegistry(event => {
                     return 1
                   }
 
-                  // Calculate rewards (base reward per pending vote)
+                  // Get player's streak for multiplier
+                  ensureDataLoaded(server)
+                  let uuid = player.getStringUuid()
+                  let data = ensurePlayerData(uuid)
+                  let streakInfo = getStreakMultiplier(data.streak.count)
+
+                  // Calculate rewards with streak multiplier
                   let totalCoins100 = 0
-                  let totalCoins50 = 0
+                  let totalCoins10 = 0
                   for (let i = 0; i < count; i++) {
-                    let coinReward = calculateCoinReward(1.0)
+                    let coinReward = calculateCoinReward(streakInfo.multiplier)
                     totalCoins100 += coinReward.coins100
-                    totalCoins50 += coinReward.coins50
+                    totalCoins10 += coinReward.coins10
                   }
 
                   // Give the coins
-                  giveCoinsToPlayer(player, totalCoins100, totalCoins50)
+                  giveCoinsToPlayer(player, totalCoins100, totalCoins10)
 
                   // Notify player
-                  let totalValue = (totalCoins100 * 100) + (totalCoins50 * 50)
+                  let totalValue = (totalCoins100 * 100) + (totalCoins10 * 10)
                   player.tell(Component.gold("★ ").append(Component.yellow("Pending Rewards Claimed")).append(Component.gold(" ★")))
                   player.tell(
                     Component.gray("  Claimed ")
@@ -757,12 +963,12 @@ ServerEvents.commandRegistry(event => {
                     rewardMsg.append(Component.blue(totalCoins100 + "x "))
                       .append(Component.gold("$100 Coin"))
                   }
-                  if (totalCoins100 > 0 && totalCoins50 > 0) {
+                  if (totalCoins100 > 0 && totalCoins10 > 0) {
                     rewardMsg.append(Component.gray(" + "))
                   }
-                  if (totalCoins50 > 0) {
-                    rewardMsg.append(Component.green(totalCoins50 + "x "))
-                      .append(Component.darkGreen("$50 Coin"))
+                  if (totalCoins10 > 0) {
+                    rewardMsg.append(Component.green(totalCoins10 + "x "))
+                      .append(Component.darkGreen("$10 Coin"))
                   }
                   player.tell(rewardMsg)
                   player.tell(
@@ -770,7 +976,16 @@ ServerEvents.commandRegistry(event => {
                       .append(Component.green("$" + totalValue))
                   )
 
-                  console.info("[KubeVote] " + playerName + " claimed " + count + " pending rewards ($" + totalValue + ")")
+                  // Show streak info if multiplier is active
+                  if (streakInfo.name) {
+                    player.tell(
+                      Component.gray("  Streak bonus: ")
+                        .append(Component.aqua(streakInfo.name))
+                        .append(Component.gray(" (x" + streakInfo.multiplier + ")"))
+                    )
+                  }
+
+                  console.info("[KubeVote] " + playerName + " claimed " + count + " pending rewards ($" + totalValue + ") (streak: " + data.streak.count + " day" + (data.streak.count !== 1 ? "s" : "") + ", x" + streakInfo.multiplier + ")")
                   ctx.getSource().sendSystemMessage(Component.green("Gave " + count + " pending rewards to " + playerName))
 
                   return 1
@@ -793,7 +1008,7 @@ ServerEvents.commandRegistry(event => {
                   let result = processVote(server, playerName, serviceId)
 
                   if (result.success) {
-                    let coinDisplay = formatCoinReward(result.coins100, result.coins50)
+                    let coinDisplay = formatCoinReward(result.coins100, result.coins10)
                     ctx.getSource().sendSystemMessage(
                       Component.green("Vote processed for " + playerName + " from " + serviceId + " - reward: " + coinDisplay + " ($" + result.value + ")")
                     )
@@ -838,16 +1053,12 @@ ServerEvents.commandRegistry(event => {
 
                 ensureDataLoaded(server)
 
-                // Reset player data
+                // Reset player data from cache
                 delete voteDataCache[uuid]
                 delete leaderboardCache.votes[uuid]
 
-                // Remove from NBT
-                let rootNbt = getRootNbt(server)
-                if (rootNbt.contains("players")) {
-                  rootNbt.getCompound("players").remove(uuid)
-                }
-                saveLeaderboard(server)
+                // Remove from database
+                deletePlayerVoteData(server, uuid)
 
                 ctx.getSource().sendSystemMessage(
                   Component.green("Reset vote data for " + playerName)
