@@ -22,37 +22,37 @@ const DISCORD_CONFIG = {
 // MYSQL CONFIGURATION - Read from discord config file
 // ============================================================================
 
-let dbConfig = {}
+let discordDbConfig = {}
 try {
-  dbConfig = JsonIO.read('kubejs/config/discord.json') || {}
+  discordDbConfig = JsonIO.read('kubejs/config/discord.json') || {}
 } catch (e) {
   console.warn('[DiscordChat] Could not load config file, using defaults: ' + e)
 }
 
-const DB_HOST = dbConfig.host || 'localhost'
-const DB_PORT = parseInt(dbConfig.port || '3306')
-const DB_NAME = dbConfig.database || 'minecraft'
-const DB_USER = dbConfig.user || 'root'
-const DB_PASS = dbConfig.password || ''
+const DISCORD_DB_HOST = discordDbConfig.host || 'localhost'
+const DISCORD_DB_PORT = parseInt(discordDbConfig.port || '3306')
+const DISCORD_DB_NAME = discordDbConfig.database || 'minecraft'
+const DISCORD_DB_USER = discordDbConfig.user || 'root'
+const DISCORD_DB_PASS = discordDbConfig.password || ''
 
 // ============================================================================
 // MYSQL CONNECTION
 // ============================================================================
 
-let MysqlDriver = Java.loadClass('com.mysql.cj.jdbc.Driver')
-let mysqlDriver = new MysqlDriver()
+let DiscordMysqlDriver = Java.loadClass('com.mysql.cj.jdbc.Driver')
+let discordMysqlDriver = new DiscordMysqlDriver()
 
-let databaseAvailable = false
+let discordDatabaseAvailable = false
 
-function getConnection() {
-  let url = 'jdbc:mysql://' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME +
-    '?user=' + encodeURIComponent(DB_USER) +
-    '&password=' + encodeURIComponent(DB_PASS) +
+function getDiscordConnection() {
+  let url = 'jdbc:mysql://' + DISCORD_DB_HOST + ':' + DISCORD_DB_PORT + '/' + DISCORD_DB_NAME +
+    '?user=' + encodeURIComponent(DISCORD_DB_USER) +
+    '&password=' + encodeURIComponent(DISCORD_DB_PASS) +
     '&autoReconnect=true'
-  return mysqlDriver.connect(url, null)
+  return discordMysqlDriver.connect(url, null)
 }
 
-function closeQuietly(resource) {
+function closeDiscordQuietly(resource) {
   if (resource) {
     try { resource.close() } catch(e) {}
   }
@@ -63,7 +63,7 @@ function initDatabase() {
   let stmt = null
   try {
     console.info('[DiscordChat] Connecting to database at ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME + '...')
-    conn = getConnection()
+    conn = getDiscordConnection()
     stmt = conn.createStatement()
 
     // Create discord_events table
@@ -80,10 +80,10 @@ function initDatabase() {
       ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     )
 
-    databaseAvailable = true
+    discordDatabaseAvailable = true
     console.info('[DiscordChat] Database table initialized successfully')
   } catch(e) {
-    databaseAvailable = false
+    discordDatabaseAvailable = false
     console.error('[DiscordChat] ========================================')
     console.error('[DiscordChat] FAILED TO CONNECT TO DATABASE!')
     console.error('[DiscordChat] Error: ' + e)
@@ -92,8 +92,8 @@ function initDatabase() {
     console.error('[DiscordChat] Discord chat sync features will be DISABLED')
     console.error('[DiscordChat] ========================================')
   } finally {
-    closeQuietly(stmt)
-    closeQuietly(conn)
+    closeDiscordQuietly(stmt)
+    closeDiscordQuietly(conn)
   }
 }
 
@@ -236,7 +236,7 @@ function buildStatsJson(server) {
 
 // Insert event into MySQL database
 function insertEvent(eventType, playerName, playerUuid, message) {
-  if (!databaseAvailable) {
+  if (!discordDatabaseAvailable) {
     console.warn('[DiscordChat] Database not available, event not recorded')
     return false
   }
@@ -244,7 +244,7 @@ function insertEvent(eventType, playerName, playerUuid, message) {
   let conn = null
   let stmt = null
   try {
-    conn = getConnection()
+    conn = getDiscordConnection()
     stmt = conn.prepareStatement(
       'INSERT INTO discord_events (event_type, player_name, player_uuid, message) VALUES (?, ?, ?, ?)'
     )
@@ -263,8 +263,8 @@ function insertEvent(eventType, playerName, playerUuid, message) {
     console.error('[DiscordChat] Failed to insert event: ' + e)
     return false
   } finally {
-    closeQuietly(stmt)
-    closeQuietly(conn)
+    closeDiscordQuietly(stmt)
+    closeDiscordQuietly(conn)
   }
 }
 
@@ -422,7 +422,7 @@ ServerEvents.commandRegistry(event => {
         )
         src.sendSystemMessage(
           Component.yellow("Database: ").append(
-            databaseAvailable ? Component.green("Connected") : Component.red("Disconnected")
+            discordDatabaseAvailable ? Component.green("Connected") : Component.red("Disconnected")
           )
         )
         src.sendSystemMessage(
