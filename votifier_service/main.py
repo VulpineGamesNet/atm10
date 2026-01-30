@@ -42,6 +42,7 @@ class VotifierServer:
         self._poll_thread: Optional[threading.Thread] = None
         self._player_poll_thread: Optional[threading.Thread] = None
         self._online_players: set[str] = set()  # Track online players
+        self._notified_players: set[str] = set()  # Track players already notified about pending rewards
 
         if config.debug:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -132,16 +133,35 @@ class VotifierServer:
         while self._running:
             try:
                 response = self.rcon.execute("list")
+                if not response:
+                    time.sleep(self.PLAYER_POLL_INTERVAL)
+                    continue
+
                 current_players = self._parse_player_list(response)
+
+                # Don't update if parse returned empty but we had players before
+                # (likely a parsing failure, not everyone logging off)
+                if not current_players and self._online_players:
+                    time.sleep(self.PLAYER_POLL_INTERVAL)
+                    continue
+
+                # Clear notification flag for players who logged off
+                logged_off = self._online_players - current_players
+                for player in logged_off:
+                    self._notified_players.discard(player.lower())
 
                 # Find newly joined players
                 new_players = current_players - self._online_players
 
                 for player in new_players:
+                    # Skip if already notified this session
+                    if player.lower() in self._notified_players:
+                        continue
                     count = pending_store.get_pending_count(player)
                     if count > 0:
                         logger.info(f"Player {player} joined with {count} pending rewards")
                         self._notify_pending_rewards(player, count)
+                        self._notified_players.add(player.lower())
 
                 self._online_players = current_players
 
@@ -216,6 +236,8 @@ class VotifierServer:
                 pending_store.claim_all(username)
                 # Clean up claimed rewards
                 pending_store.clear_claimed(username)
+                # Clear notification flag so they can be notified of future rewards
+                self._notified_players.discard(username.lower())
             return count > 0
         except Exception as e:
             logger.error(f"Failed to claim pending rewards for {username}: {e}")

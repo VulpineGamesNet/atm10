@@ -40,7 +40,13 @@ class DatabaseManager:
                 # Verify connection by running a simple query
                 await conn.run_sync(lambda _: None)
             self._initialized = True
-            logger.info(f"Database connected: {self.config.host}:{self.config.port}/{self.config.database}")
+            # Mask password in URL for logging
+            masked_url = self.config.url
+            if "@" in masked_url:
+                # Replace password between :// and @
+                import re
+                masked_url = re.sub(r'(://[^:]+:)[^@]*(@)', r'\1***\2', masked_url)
+            logger.info(f"Database connected: {masked_url}")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")

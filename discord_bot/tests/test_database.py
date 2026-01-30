@@ -14,11 +14,7 @@ from models import DiscordEvent
 def db_config():
     """Create a test database configuration."""
     return DatabaseConfig(
-        host="localhost",
-        port=3306,
-        database="test_minecraft",
-        user="test_user",
-        password="test_pass",
+        url="jdbc:mysql://test_user:test_pass@localhost:3306/test_minecraft",
     )
 
 
@@ -43,8 +39,8 @@ class TestDatabaseManagerInit:
                 manager = DatabaseManager(db_config)
 
         mock_engine.assert_called_once()
-        call_kwargs = mock_engine.call_args
-        assert "mysql+asyncmy://test_user:test_pass@localhost:3306/test_minecraft" in call_kwargs[0]
+        call_args = mock_engine.call_args[0][0]
+        assert "mysql+asyncmy://test_user:test_pass@localhost:3306/test_minecraft" == call_args
 
     def test_init_not_initialized(self, db_config):
         """Test that manager starts as not initialized."""

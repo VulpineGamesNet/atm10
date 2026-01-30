@@ -31,16 +31,18 @@ class MinecraftConfig:
 class DatabaseConfig:
     """Database configuration for MySQL."""
 
-    host: str = "localhost"
-    port: int = 3306
-    database: str = "minecraft"
-    user: str = "root"
-    password: str = ""
+    url: str = ""
 
     @property
     def async_url(self) -> str:
         """Get SQLAlchemy async connection URL."""
-        return f"mysql+asyncmy://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+        # Convert jdbc:mysql:// to mysql+asyncmy://
+        url = self.url
+        if url.startswith("jdbc:mysql://"):
+            url = url.replace("jdbc:mysql://", "mysql+asyncmy://", 1)
+        elif url.startswith("mysql://"):
+            url = url.replace("mysql://", "mysql+asyncmy://", 1)
+        return url
 
 
 @dataclass
@@ -123,11 +125,7 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
 
     # Parse database config
     database_config = DatabaseConfig(
-        host=_get_env("DB_HOST", "localhost"),
-        port=_get_env_int("DB_PORT", 3306),
-        database=_get_env("DB_NAME", "minecraft"),
-        user=_get_env("DB_USER", "root"),
-        password=_get_env("DB_PASSWORD", ""),
+        url=_get_env("DATABASE_URL", ""),
     )
 
     # Parse settings (all optional with defaults)

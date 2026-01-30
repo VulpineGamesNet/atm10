@@ -19,12 +19,12 @@ const DISCORD_CONFIG = {
 }
 
 // ============================================================================
-// MYSQL CONFIGURATION - Read from kubeshop config file
+// MYSQL CONFIGURATION - Read from discord config file
 // ============================================================================
 
 let dbConfig = {}
 try {
-  dbConfig = JsonIO.read('kubejs/config/kubeshop.json') || {}
+  dbConfig = JsonIO.read('kubejs/config/discord.json') || {}
 } catch (e) {
   console.warn('[DiscordChat] Could not load config file, using defaults: ' + e)
 }

@@ -30,11 +30,7 @@ def config():
             server_name="Test Server",
         ),
         database=DatabaseConfig(
-            host="localhost",
-            port=3306,
-            database="test_minecraft",
-            user="test_user",
-            password="test_pass",
+            url="jdbc:mysql://test_user:test_pass@localhost:3306/test_minecraft",
         ),
         settings=Settings(
             topic_update_interval=60,
