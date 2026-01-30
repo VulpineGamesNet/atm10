@@ -58,11 +58,11 @@ function closeDiscordQuietly(resource) {
   }
 }
 
-function initDatabase() {
+function initDiscordDatabase() {
   let conn = null
   let stmt = null
   try {
-    console.info('[DiscordChat] Connecting to database at ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME + '...')
+    console.info('[DiscordChat] Connecting to database at ' + DISCORD_DB_HOST + ':' + DISCORD_DB_PORT + '/' + DISCORD_DB_NAME + '...')
     conn = getDiscordConnection()
     stmt = conn.createStatement()
 
@@ -87,8 +87,8 @@ function initDatabase() {
     console.error('[DiscordChat] ========================================')
     console.error('[DiscordChat] FAILED TO CONNECT TO DATABASE!')
     console.error('[DiscordChat] Error: ' + e)
-    console.error('[DiscordChat] Host: ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME)
-    console.error('[DiscordChat] User: ' + DB_USER)
+    console.error('[DiscordChat] Host: ' + DISCORD_DB_HOST + ':' + DISCORD_DB_PORT + '/' + DISCORD_DB_NAME)
+    console.error('[DiscordChat] User: ' + DISCORD_DB_USER)
     console.error('[DiscordChat] Discord chat sync features will be DISABLED')
     console.error('[DiscordChat] ========================================')
   } finally {
@@ -98,7 +98,7 @@ function initDatabase() {
 }
 
 // Initialize database on script load
-initDatabase()
+initDiscordDatabase()
 
 // ============================================================================
 // STATE VARIABLES
