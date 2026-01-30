@@ -9,7 +9,8 @@ import pytest
 from PIL import Image
 
 from bot import DiscordMCBot, MinecraftBridge
-from config import Config, DiscordConfig, MinecraftConfig, Settings
+from config import Config, DatabaseConfig, DiscordConfig, MinecraftConfig, Settings
+from models import DiscordEvent
 
 
 @pytest.fixture
@@ -28,10 +29,18 @@ def config():
             rcon_password="test_password",
             server_name="Test Server",
         ),
+        database=DatabaseConfig(
+            host="localhost",
+            port=3306,
+            database="test_minecraft",
+            user="test_user",
+            password="test_pass",
+        ),
         settings=Settings(
             topic_update_interval=60,
             stats_check_interval=5,
             max_message_length=256,
+            events_poll_interval=2,
         ),
     )
 
@@ -49,7 +58,15 @@ def mock_bot(config):
 @pytest.fixture
 def bridge(mock_bot, config):
     """Create a MinecraftBridge instance for testing."""
-    return MinecraftBridge(mock_bot, config)
+    bridge = MinecraftBridge(mock_bot, config)
+    # Mock the database manager
+    bridge.db_manager = MagicMock()
+    bridge.db_manager.is_initialized = True
+    bridge.db_manager.initialize = AsyncMock(return_value=True)
+    bridge.db_manager.close = AsyncMock()
+    bridge.db_manager.get_unprocessed_events = AsyncMock(return_value=[])
+    bridge.db_manager.mark_events_processed = AsyncMock(return_value=True)
+    return bridge
 
 
 class TestMessageSanitization:
@@ -380,7 +397,7 @@ class TestPersistentRCON:
         mock_connect.assert_called_once()
 
     def test_cog_unload_disconnects_rcon(self, bridge):
-        """Test that cog_unload disconnects RCON."""
+        """Test that cog_unload disconnects RCON and closes database."""
         mock_socket = MagicMock()
         bridge._rcon_socket = mock_socket
         bridge._rcon_connected = True
@@ -388,11 +405,14 @@ class TestPersistentRCON:
         bridge.http_session.close = AsyncMock()
         bridge.poll_server_stats = MagicMock()
         bridge.update_channel_topic = MagicMock()
+        bridge.poll_discord_events = MagicMock()
+        bridge.poll_discord_events.is_running.return_value = True
 
         import asyncio
         asyncio.get_event_loop().run_until_complete(bridge.cog_unload())
 
         assert bridge._rcon_connected is False
+        bridge.db_manager.close.assert_called_once()
 
     def test_polling_uses_config_interval(self, bridge):
         """Test that polling interval is set from config."""
@@ -626,28 +646,38 @@ class TestServerStatusDetection:
         mock_embed.assert_not_called()
 
 
-class TestMessageProcessing:
-    """Tests for processing messages from KubeJS."""
+class TestEventProcessing:
+    """Tests for processing events from database."""
+
+    def _create_event(self, event_type: str, player_name: str, player_uuid: str, message: str = None) -> DiscordEvent:
+        """Helper to create a mock DiscordEvent."""
+        event = MagicMock(spec=DiscordEvent)
+        event.id = 1
+        event.event_type = event_type
+        event.player_name = player_name
+        event.player_uuid = player_uuid
+        event.message = message
+        return event
 
     @pytest.mark.asyncio
-    async def test_process_chat_message(self, bridge):
-        """Test processing a chat message."""
-        messages = [{"type": "chat", "player": "Steve", "uuid": "abc-123", "message": "Hello!"}]
+    async def test_process_chat_event(self, bridge):
+        """Test processing a chat event."""
+        events = [self._create_event("chat", "Steve", "abc-123", "Hello!")]
 
         with patch.object(bridge, "send_webhook_message", new_callable=AsyncMock) as mock_webhook:
-            await bridge.process_messages(messages)
+            await bridge.process_events(events)
 
         mock_webhook.assert_called_once()
         assert mock_webhook.call_args[0][0] == "Hello!"
         assert mock_webhook.call_args[0][1] == "Steve"
 
     @pytest.mark.asyncio
-    async def test_process_join_message(self, bridge):
-        """Test processing a join message."""
-        messages = [{"type": "join", "player": "Steve", "uuid": "abc-123"}]
+    async def test_process_join_event(self, bridge):
+        """Test processing a join event."""
+        events = [self._create_event("join", "Steve", "abc-123")]
 
         with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
-            await bridge.process_messages(messages)
+            await bridge.process_events(events)
 
         mock_embed.assert_called_once()
         args = mock_embed.call_args[0]
@@ -655,17 +685,61 @@ class TestMessageProcessing:
         assert "Steve logged in" in args[3]  # author_name
 
     @pytest.mark.asyncio
-    async def test_process_leave_message(self, bridge):
-        """Test processing a leave message."""
-        messages = [{"type": "leave", "player": "Steve", "uuid": "abc-123"}]
+    async def test_process_leave_event(self, bridge):
+        """Test processing a leave event."""
+        events = [self._create_event("leave", "Steve", "abc-123")]
 
         with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
-            await bridge.process_messages(messages)
+            await bridge.process_events(events)
 
         mock_embed.assert_called_once()
         args = mock_embed.call_args[0]
         assert args[0] is None  # no description
         assert "Steve logged out" in args[3]  # author_name
+
+
+class TestDatabasePolling:
+    """Tests for database event polling."""
+
+    @pytest.mark.asyncio
+    async def test_poll_discord_events_no_events(self, bridge):
+        """Test polling when no events available."""
+        bridge.db_manager.get_unprocessed_events.return_value = []
+
+        with patch.object(bridge, "process_events", new_callable=AsyncMock) as mock_process:
+            await bridge.poll_discord_events()
+
+        mock_process.assert_not_called()
+        bridge.db_manager.mark_events_processed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_discord_events_with_events(self, bridge):
+        """Test polling and processing events."""
+        mock_event = MagicMock(spec=DiscordEvent)
+        mock_event.id = 1
+        mock_event.event_type = "chat"
+        mock_event.player_name = "Steve"
+        mock_event.player_uuid = "abc-123"
+        mock_event.message = "Hello!"
+
+        bridge.db_manager.get_unprocessed_events.return_value = [mock_event]
+
+        with patch.object(bridge, "process_events", new_callable=AsyncMock) as mock_process:
+            await bridge.poll_discord_events()
+
+        mock_process.assert_called_once_with([mock_event])
+        bridge.db_manager.mark_events_processed.assert_called_once_with([1])
+
+    @pytest.mark.asyncio
+    async def test_poll_discord_events_db_not_initialized(self, bridge):
+        """Test polling when database not initialized."""
+        bridge.db_manager.is_initialized = False
+
+        with patch.object(bridge, "process_events", new_callable=AsyncMock) as mock_process:
+            await bridge.poll_discord_events()
+
+        mock_process.assert_not_called()
+        bridge.db_manager.get_unprocessed_events.assert_not_called()
 
 
 class TestDiscordMCBot:

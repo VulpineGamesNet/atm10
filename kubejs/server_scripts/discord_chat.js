@@ -1,5 +1,5 @@
-// Discord Chat Sync - Minecraft <-> Discord Integration
-// Minecraft -> Discord: via RCON /getstats command (polled by Python bot)
+// Discord Chat Sync - Minecraft <-> Discord Integration (MySQL Version)
+// Minecraft -> Discord: Events stored in MySQL, polled by Python bot
 // Discord -> Minecraft: via RCON /discordmsg command (called by Python bot)
 
 // ============================================================================
@@ -19,11 +19,92 @@ const DISCORD_CONFIG = {
 }
 
 // ============================================================================
+// MYSQL CONFIGURATION - Read from kubeshop config file
+// ============================================================================
+
+let dbConfig = {}
+try {
+  dbConfig = JsonIO.read('kubejs/config/kubeshop.json') || {}
+} catch (e) {
+  console.warn('[DiscordChat] Could not load config file, using defaults: ' + e)
+}
+
+const DB_HOST = dbConfig.host || 'localhost'
+const DB_PORT = parseInt(dbConfig.port || '3306')
+const DB_NAME = dbConfig.database || 'minecraft'
+const DB_USER = dbConfig.user || 'root'
+const DB_PASS = dbConfig.password || ''
+
+// ============================================================================
+// MYSQL CONNECTION
+// ============================================================================
+
+let MysqlDriver = Java.loadClass('com.mysql.cj.jdbc.Driver')
+let mysqlDriver = new MysqlDriver()
+
+let databaseAvailable = false
+
+function getConnection() {
+  let url = 'jdbc:mysql://' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME +
+    '?user=' + encodeURIComponent(DB_USER) +
+    '&password=' + encodeURIComponent(DB_PASS) +
+    '&autoReconnect=true'
+  return mysqlDriver.connect(url, null)
+}
+
+function closeQuietly(resource) {
+  if (resource) {
+    try { resource.close() } catch(e) {}
+  }
+}
+
+function initDatabase() {
+  let conn = null
+  let stmt = null
+  try {
+    console.info('[DiscordChat] Connecting to database at ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME + '...')
+    conn = getConnection()
+    stmt = conn.createStatement()
+
+    // Create discord_events table
+    stmt.executeUpdate(
+      'CREATE TABLE IF NOT EXISTS discord_events (' +
+      '  id BIGINT AUTO_INCREMENT PRIMARY KEY,' +
+      '  event_type VARCHAR(20) NOT NULL,' +
+      '  player_name VARCHAR(64) NOT NULL,' +
+      '  player_uuid VARCHAR(36) NOT NULL,' +
+      '  message TEXT,' +
+      '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' +
+      '  processed_at TIMESTAMP NULL,' +
+      '  INDEX idx_unprocessed (processed_at, created_at)' +
+      ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    )
+
+    databaseAvailable = true
+    console.info('[DiscordChat] Database table initialized successfully')
+  } catch(e) {
+    databaseAvailable = false
+    console.error('[DiscordChat] ========================================')
+    console.error('[DiscordChat] FAILED TO CONNECT TO DATABASE!')
+    console.error('[DiscordChat] Error: ' + e)
+    console.error('[DiscordChat] Host: ' + DB_HOST + ':' + DB_PORT + '/' + DB_NAME)
+    console.error('[DiscordChat] User: ' + DB_USER)
+    console.error('[DiscordChat] Discord chat sync features will be DISABLED')
+    console.error('[DiscordChat] ========================================')
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
+}
+
+// Initialize database on script load
+initDatabase()
+
+// ============================================================================
 // STATE VARIABLES
 // ============================================================================
 
 let serverStartTime = Date.now()
-let pendingMessages = []
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -122,7 +203,7 @@ function getPlayerList(server) {
   return players
 }
 
-// Build JSON response for /getstats command
+// Build JSON response for /getstats command (no messages - they're in MySQL now)
 function buildStatsJson(server) {
   let tps = getTPS(server)
   let playerCount = getPlayerCount(server)
@@ -137,54 +218,54 @@ function buildStatsJson(server) {
   }
   playersJson += ']'
 
-  // Debug: log pending messages count
-  if (pendingMessages.length > 0) {
-    console.info("[DiscordChat] Building JSON with " + pendingMessages.length + " messages")
-  }
-
-  // Build messages array JSON
-  let messagesJson = '['
-  for (let i = 0; i < pendingMessages.length; i++) {
-    if (i > 0) messagesJson += ','
-    let msg = pendingMessages[i]
-
-    // Debug: log each message being serialized
-    console.info("[DiscordChat] Serializing msg: type=" + msg.type + ", player=" + msg.player + ", uuid=" + msg.uuid)
-
-    messagesJson += '{"type":"' + escapeJson(msg.type) + '"'
-    messagesJson += ',"player":"' + escapeJson(msg.player) + '"'
-    messagesJson += ',"uuid":"' + escapeJson(msg.uuid) + '"'
-    if (msg.message) {
-      messagesJson += ',"message":"' + escapeJson(msg.message) + '"'
-    }
-    messagesJson += '}'
-  }
-  messagesJson += ']'
-
-  // Build main JSON
+  // Build main JSON (no messages field - bot polls database directly)
   let jsonStr = '{'
   jsonStr += '"tps":' + tps + ','
   jsonStr += '"playerCount":' + playerCount + ','
   jsonStr += '"players":' + playersJson + ','
   jsonStr += '"uptime":"' + escapeJson(uptime) + '",'
-  jsonStr += '"serverName":"' + escapeJson(DISCORD_CONFIG.serverName) + '",'
-  jsonStr += '"messages":' + messagesJson
+  jsonStr += '"serverName":"' + escapeJson(DISCORD_CONFIG.serverName) + '"'
   jsonStr += '}'
-
-  // Clear messages after building response (atomic read & clear)
-  pendingMessages = []
 
   return jsonStr
 }
 
-// Queue a message for Python bot to send to Discord
-function queueMessage(type, playerName, playerUuid, message) {
-  pendingMessages.push({
-    type: String(type),
-    player: String(playerName),
-    uuid: String(playerUuid),
-    message: message ? String(message) : null
-  })
+// ============================================================================
+// DATABASE EVENT INSERTION
+// ============================================================================
+
+// Insert event into MySQL database
+function insertEvent(eventType, playerName, playerUuid, message) {
+  if (!databaseAvailable) {
+    console.warn('[DiscordChat] Database not available, event not recorded')
+    return false
+  }
+
+  let conn = null
+  let stmt = null
+  try {
+    conn = getConnection()
+    stmt = conn.prepareStatement(
+      'INSERT INTO discord_events (event_type, player_name, player_uuid, message) VALUES (?, ?, ?, ?)'
+    )
+    stmt.setString(1, eventType)
+    stmt.setString(2, playerName)
+    stmt.setString(3, playerUuid)
+    if (message) {
+      stmt.setString(4, message)
+    } else {
+      stmt.setNull(4, Java.loadClass('java.sql.Types').VARCHAR)
+    }
+    stmt.executeUpdate()
+    console.info('[DiscordChat] Event inserted: type=' + eventType + ', player=' + playerName)
+    return true
+  } catch(e) {
+    console.error('[DiscordChat] Failed to insert event: ' + e)
+    return false
+  } finally {
+    closeQuietly(stmt)
+    closeQuietly(conn)
+  }
 }
 
 // ============================================================================
@@ -194,25 +275,17 @@ function queueMessage(type, playerName, playerUuid, message) {
 // Server loaded - initialize
 ServerEvents.loaded(event => {
   serverStartTime = Date.now()
-  console.info("[DiscordChat] Discord chat sync initialized")
+  console.info("[DiscordChat] Discord chat sync initialized (MySQL version)")
 })
 
 // Player chat messages
 PlayerEvents.chat(event => {
-  console.info("[DiscordChat] Chat event fired!")
-
   if (!DISCORD_CONFIG.enableChatSync) {
-    console.info("[DiscordChat] Chat sync disabled, skipping")
     return
   }
 
   let player = event.player
-  console.info("[DiscordChat] Player: " + player)
-
-  // Try to get message - in KubeJS 1.21, it might be event.message or event.getMessage()
   let message = event.message
-  console.info("[DiscordChat] Message object: " + message)
-  console.info("[DiscordChat] Message type: " + (typeof message))
 
   // Get the raw message string
   let messageStr = ""
@@ -231,21 +304,17 @@ PlayerEvents.chat(event => {
     if (message) messageStr = String(message)
   }
 
-  console.info("[DiscordChat] Message string: " + messageStr)
-
   messageStr = stripColorCodes(messageStr)
   messageStr = truncateMessage(messageStr, DISCORD_CONFIG.maxMessageLength)
 
   if (!messageStr || messageStr.length === 0) {
-    console.info("[DiscordChat] Empty message, skipping")
     return
   }
 
   let playerName = player.getName().getString()
   let playerUuid = player.getStringUuid()
 
-  console.info("[DiscordChat] Queueing message from " + playerName + ": " + messageStr)
-  queueMessage("chat", playerName, playerUuid, messageStr)
+  insertEvent("chat", playerName, playerUuid, messageStr)
 })
 
 // Player join
@@ -256,7 +325,7 @@ PlayerEvents.loggedIn(event => {
   let playerName = player.getName().getString()
   let playerUuid = player.getStringUuid()
 
-  queueMessage("join", playerName, playerUuid)
+  insertEvent("join", playerName, playerUuid, null)
 })
 
 // Player leave
@@ -267,7 +336,7 @@ PlayerEvents.loggedOut(event => {
   let playerName = player.getName().getString()
   let playerUuid = player.getStringUuid()
 
-  queueMessage("leave", playerName, playerUuid)
+  insertEvent("leave", playerName, playerUuid, null)
 })
 
 // ============================================================================
@@ -278,8 +347,8 @@ ServerEvents.commandRegistry(event => {
   let Commands = event.getCommands()
   let Arguments = event.getArguments()
 
-  // /getstats - Returns server stats and pending messages as JSON (for Python bot)
-  // Clears the message queue after returning
+  // /getstats - Returns server stats as JSON (for Python bot)
+  // Messages are now in MySQL, not returned here
   event.register(
     Commands.literal("getstats")
       .requires(function (src) {
@@ -352,8 +421,8 @@ ServerEvents.commandRegistry(event => {
           )
         )
         src.sendSystemMessage(
-          Component.yellow("Pending Messages: ").append(
-            Component.white(pendingMessages.length + "")
+          Component.yellow("Database: ").append(
+            databaseAvailable ? Component.green("Connected") : Component.red("Disconnected")
           )
         )
         src.sendSystemMessage(
@@ -367,4 +436,4 @@ ServerEvents.commandRegistry(event => {
   )
 })
 
-console.info("[DiscordChat] Discord chat sync script loaded")
+console.info("[DiscordChat] Discord chat sync script loaded (MySQL version)")

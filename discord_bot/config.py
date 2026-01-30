@@ -28,12 +28,29 @@ class MinecraftConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Database configuration for MySQL."""
+
+    host: str = "localhost"
+    port: int = 3306
+    database: str = "minecraft"
+    user: str = "root"
+    password: str = ""
+
+    @property
+    def async_url(self) -> str:
+        """Get SQLAlchemy async connection URL."""
+        return f"mysql+asyncmy://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+
+
+@dataclass
 class Settings:
     """General bot settings."""
 
     topic_update_interval: int = 60  # seconds
     stats_check_interval: int = 5  # seconds
     max_message_length: int = 256
+    events_poll_interval: int = 2  # seconds - how often to poll discord_events table
 
 
 @dataclass
@@ -42,6 +59,7 @@ class Config:
 
     discord: DiscordConfig
     minecraft: MinecraftConfig
+    database: DatabaseConfig
     settings: Settings = field(default_factory=Settings)
 
 
@@ -103,15 +121,26 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
         server_name=_get_env("SERVER_NAME", "Minecraft Server"),
     )
 
+    # Parse database config
+    database_config = DatabaseConfig(
+        host=_get_env("DB_HOST", "localhost"),
+        port=_get_env_int("DB_PORT", 3306),
+        database=_get_env("DB_NAME", "minecraft"),
+        user=_get_env("DB_USER", "root"),
+        password=_get_env("DB_PASSWORD", ""),
+    )
+
     # Parse settings (all optional with defaults)
     settings = Settings(
         topic_update_interval=_get_env_int("TOPIC_UPDATE_INTERVAL", 60),
         stats_check_interval=_get_env_int("STATS_CHECK_INTERVAL", 5),
         max_message_length=_get_env_int("MAX_MESSAGE_LENGTH", 256),
+        events_poll_interval=_get_env_int("EVENTS_POLL_INTERVAL", 2),
     )
 
     return Config(
         discord=discord_config,
         minecraft=minecraft_config,
+        database=database_config,
         settings=settings,
     )

@@ -26,6 +26,8 @@ from discord.ext import commands, tasks
 from PIL import Image
 
 from config import Config, load_config
+from database import DatabaseManager
+from models import DiscordEvent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,10 +74,17 @@ class MinecraftBridge(commands.Cog):
         # Persistent RCON connection state
         self._rcon_socket: Optional[socket.socket] = None
         self._rcon_connected: bool = False
+        # Database manager for Discord events
+        self.db_manager: DatabaseManager = DatabaseManager(config.database)
 
     async def cog_load(self) -> None:
         """Called when cog is loaded."""
         self.http_session = aiohttp.ClientSession()
+        # Initialize database connection
+        if await self.db_manager.initialize():
+            self.poll_discord_events.start()
+        else:
+            logger.warning("Database not available - discord events polling disabled")
         self.poll_server_stats.start()
         self.update_channel_topic.start()
         logger.info("MinecraftBridge cog loaded")
@@ -84,9 +93,12 @@ class MinecraftBridge(commands.Cog):
         """Called when cog is unloaded."""
         self.poll_server_stats.cancel()
         self.update_channel_topic.cancel()
+        if self.poll_discord_events.is_running():
+            self.poll_discord_events.cancel()
         if self.http_session:
             await self.http_session.close()
         self._rcon_disconnect()
+        await self.db_manager.close()
 
     async def setup_webhook(self) -> None:
         """Get or create a webhook for the configured channel."""
@@ -420,15 +432,15 @@ class MinecraftBridge(commands.Cog):
 
         return buffer
 
-    async def process_messages(self, messages: list) -> None:
-        """Process messages from KubeJS (chat, join, leave)."""
-        for msg in messages:
-            msg_type = msg.get("type")
-            player = msg.get("player", "Unknown")
-            uuid = msg.get("uuid", "")
+    async def process_events(self, events: list[DiscordEvent]) -> None:
+        """Process events from database (chat, join, leave)."""
+        for event in events:
+            msg_type = event.event_type
+            player = event.player_name
+            uuid = event.player_uuid
 
             if msg_type == "chat":
-                content = msg.get("message", "")
+                content = event.message or ""
                 await self.send_webhook_message(content, player, uuid)
                 logger.info(f"Relayed chat from {player}: {content[:50]}...")
 
@@ -452,13 +464,33 @@ class MinecraftBridge(commands.Cog):
                 )
                 logger.info(f"Sent leave notification for {player}")
 
+    @tasks.loop(seconds=2)
+    async def poll_discord_events(self) -> None:
+        """Poll database for unprocessed Discord events."""
+        if not self.db_manager.is_initialized:
+            return
+
+        events = await self.db_manager.get_unprocessed_events(limit=10)
+        if not events:
+            return
+
+        # Process events
+        await self.process_events(events)
+
+        # Mark as processed
+        event_ids = [e.id for e in events]
+        await self.db_manager.mark_events_processed(event_ids)
+
+    @poll_discord_events.before_loop
+    async def before_poll_events(self) -> None:
+        self.poll_discord_events.change_interval(seconds=self.config.settings.events_poll_interval)
+        await self.bot.wait_until_ready()
+
     @tasks.loop(seconds=5)
     async def poll_server_stats(self) -> None:
-        """Poll server stats via RCON and process messages."""
+        """Poll server stats via RCON for status monitoring."""
         stats = await self.get_stats_via_rcon()
         now = time.time()
-
-        was_online = self.server_online
 
         if stats:
             self.last_stats = stats
@@ -479,10 +511,6 @@ class MinecraftBridge(commands.Cog):
                     logger.info("Server came online - sent notification")
                 else:
                     logger.info("Server came online - notification skipped (cooldown)")
-
-            messages = stats.get("messages", [])
-            if messages:
-                await self.process_messages(messages)
         else:
             self.consecutive_offline_checks += 1
 

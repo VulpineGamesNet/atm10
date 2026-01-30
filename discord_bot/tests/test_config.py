@@ -8,6 +8,7 @@ import pytest
 
 from config import (
     Config,
+    DatabaseConfig,
     DiscordConfig,
     MinecraftConfig,
     Settings,
@@ -130,6 +131,12 @@ class TestLoadConfig:
         monkeypatch.delenv("TOPIC_UPDATE_INTERVAL", raising=False)
         monkeypatch.delenv("STATS_CHECK_INTERVAL", raising=False)
         monkeypatch.delenv("MAX_MESSAGE_LENGTH", raising=False)
+        monkeypatch.delenv("EVENTS_POLL_INTERVAL", raising=False)
+        monkeypatch.delenv("DB_HOST", raising=False)
+        monkeypatch.delenv("DB_PORT", raising=False)
+        monkeypatch.delenv("DB_NAME", raising=False)
+        monkeypatch.delenv("DB_USER", raising=False)
+        monkeypatch.delenv("DB_PASSWORD", raising=False)
 
         config = load_config(env_file=None)
 
@@ -140,6 +147,12 @@ class TestLoadConfig:
         assert config.settings.topic_update_interval == 60
         assert config.settings.stats_check_interval == 5
         assert config.settings.max_message_length == 256
+        assert config.settings.events_poll_interval == 2
+        assert config.database.host == "localhost"
+        assert config.database.port == 3306
+        assert config.database.database == "minecraft"
+        assert config.database.user == "root"
+        assert config.database.password == ""
 
     def test_load_config_from_env_file(self, monkeypatch, tmp_path):
         """Test loading config from .env file."""
@@ -211,6 +224,33 @@ class TestDataclasses:
         assert settings.topic_update_interval == 60
         assert settings.stats_check_interval == 5
         assert settings.max_message_length == 256
+        assert settings.events_poll_interval == 2
+
+    def test_database_config_defaults(self):
+        """Test DatabaseConfig dataclass defaults."""
+        config = DatabaseConfig()
+        assert config.host == "localhost"
+        assert config.port == 3306
+        assert config.database == "minecraft"
+        assert config.user == "root"
+        assert config.password == ""
+
+    def test_database_config_async_url(self):
+        """Test DatabaseConfig async_url property."""
+        config = DatabaseConfig(
+            host="db.example.com",
+            port=3307,
+            database="testdb",
+            user="testuser",
+            password="testpass",
+        )
+        expected = "mysql+asyncmy://testuser:testpass@db.example.com:3307/testdb"
+        assert config.async_url == expected
+
+    def test_database_config_async_url_empty_password(self):
+        """Test DatabaseConfig async_url with empty password."""
+        config = DatabaseConfig(host="localhost", user="root", password="")
+        assert "root:@localhost" in config.async_url
 
     def test_config_container(self):
         """Test Config container dataclass."""
@@ -220,10 +260,12 @@ class TestDataclasses:
             rcon_port=25575,
             rcon_password="pass",
         )
+        database = DatabaseConfig()
         settings = Settings()
 
-        config = Config(discord=discord, minecraft=minecraft, settings=settings)
+        config = Config(discord=discord, minecraft=minecraft, database=database, settings=settings)
 
         assert config.discord.token == "token"
         assert config.minecraft.rcon_host == "host"
+        assert config.database.host == "localhost"
         assert config.settings.topic_update_interval == 60

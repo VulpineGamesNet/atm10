@@ -9,6 +9,8 @@ dependencies = [
     "discord-py>=2.3.0",
     "python-dotenv>=1.0.0",
     "Pillow>=10.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncmy>=0.2.9",
 ]
 
 [dependency-groups]
