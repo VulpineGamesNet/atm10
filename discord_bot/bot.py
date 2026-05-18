@@ -501,14 +501,12 @@ class MinecraftBridge(commands.Cog):
                 # Only notify if cooldown has passed
                 if now - self.last_status_notification >= self.STATUS_COOLDOWN:
                     server_name = self.config.minecraft.server_name
-                    await self.send_webhook_embed(
-                        None,
+                    await self._send_status_embed_with_retry(
                         self.EMBED_COLOR_BLUE,
-                        self.SERVER_ICON_URL,
                         f"{server_name} is now online!",
+                        log_label="Server came online",
                     )
                     self.last_status_notification = now
-                    logger.info("Server came online - sent notification")
                 else:
                     logger.info("Server came online - notification skipped (cooldown)")
         else:
@@ -520,16 +518,46 @@ class MinecraftBridge(commands.Cog):
                 # Only notify if cooldown has passed
                 if now - self.last_status_notification >= self.STATUS_COOLDOWN:
                     server_name = self.config.minecraft.server_name
-                    await self.send_webhook_embed(
-                        None,
+                    await self._send_status_embed_with_retry(
                         self.EMBED_COLOR_ORANGE,
-                        self.SERVER_ICON_URL,
                         f"{server_name} is restarting...",
+                        log_label="Server went offline",
                     )
                     self.last_status_notification = now
-                    logger.info("Server went offline - sent notification")
                 else:
                     logger.info("Server went offline - notification skipped (cooldown)")
+
+    STATUS_RETRY_DELAY: float = 2.0  # seconds before retrying a failed status webhook
+
+    async def _send_status_embed_with_retry(
+        self,
+        color: int,
+        author_name: str,
+        log_label: str,
+    ) -> bool:
+        """Send a status author-only embed; on False, log a warning and retry once."""
+        for attempt in (1, 2):
+            try:
+                ok = await self.send_webhook_embed(
+                    None,
+                    color,
+                    self.SERVER_ICON_URL,
+                    author_name,
+                )
+            except Exception as e:
+                logger.warning(f"{log_label} - webhook send raised on attempt {attempt}: {e}")
+                ok = False
+            if ok:
+                if attempt == 1:
+                    logger.info(f"{log_label} - sent notification")
+                else:
+                    logger.info(f"{log_label} - sent notification on retry")
+                return True
+            if attempt == 1:
+                logger.warning(f"{log_label} - webhook send returned False, retrying in {self.STATUS_RETRY_DELAY}s")
+                await asyncio.sleep(self.STATUS_RETRY_DELAY)
+        logger.error(f"{log_label} - webhook send failed after retry")
+        return False
 
     @poll_server_stats.before_loop
     async def before_poll_stats(self) -> None:
