@@ -601,7 +601,26 @@ class MinecraftBridge(commands.Cog):
             except discord.Forbidden:
                 pass
 
-    @tasks.loop(seconds=60)
+    TOPIC_BASE_INTERVAL: int = 600  # 10 min — Discord limit is 2 edits / 10 min per channel
+    TOPIC_MAX_BACKOFF: int = 3600   # cap retry-after at 1 hour
+
+    @staticmethod
+    def _round_uptime(uptime: str) -> str:
+        """Round uptime down to nearest 10 minutes to reduce topic churn."""
+        import re
+        m = re.match(r"(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m)?", uptime.strip())
+        if not m:
+            return uptime
+        d = int(m.group(1) or 0)
+        h = int(m.group(2) or 0)
+        mins = (int(m.group(3) or 0) // 10) * 10
+        parts = []
+        if d: parts.append(f"{d}d")
+        if h or d: parts.append(f"{h}h")
+        parts.append(f"{mins}m")
+        return " ".join(parts)
+
+    @tasks.loop(seconds=600)
     async def update_channel_topic(self) -> None:
         """Update Discord channel topic with server stats."""
         if not self.last_stats:
@@ -620,9 +639,9 @@ class MinecraftBridge(commands.Cog):
 
             tps = self.last_stats.get("tps", 20.0)
             player_count = self.last_stats.get("playerCount", 0)
-            uptime = self.last_stats.get("uptime", "0h 0m")
+            uptime = self._round_uptime(self.last_stats.get("uptime", "0h 0m"))
 
-            topic = f"TPS: {tps:.2f} | Players: {player_count} | Uptime: {uptime}"
+            topic = f"TPS: {tps:.1f} | Players: {player_count} | Uptime: {uptime}"
 
             if self.last_topic == topic:
                 return
@@ -630,12 +649,19 @@ class MinecraftBridge(commands.Cog):
             await channel.edit(topic=topic)
             self.last_topic = topic
             logger.info(f"Updated channel topic: {topic}")
+            # Restore base cadence after a successful edit
+            if self.update_channel_topic.seconds != self.TOPIC_BASE_INTERVAL:
+                self.update_channel_topic.change_interval(seconds=self.TOPIC_BASE_INTERVAL)
 
         except discord.Forbidden:
             logger.error("Bot lacks permission to edit channel topic")
         except discord.HTTPException as e:
             if e.status == 429:
-                logger.warning("Rate limited when updating channel topic")
+                retry_after = float(e.response.headers.get("Retry-After", "60"))
+                backoff = min(int(retry_after) + 30, self.TOPIC_MAX_BACKOFF)
+                logger.warning(f"Topic edit rate limited. Backing off {backoff}s (retry-after={retry_after}s)")
+                self.update_channel_topic.change_interval(seconds=backoff)
+                await asyncio.sleep(retry_after)
             else:
                 logger.error(f"HTTP error updating channel topic: {e}")
         except Exception as e:
