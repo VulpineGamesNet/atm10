@@ -544,7 +544,7 @@ function processVote(server, username, serviceId) {
   ensureDataLoaded(server)
 
   // Find player by username
-  let player = server.getPlayer(username)
+  let player = server.getPlayerList().getPlayerByName(username)
   if (!player) {
     // Player offline - votifier service will save as pending reward
     console.info("[KubeVote] Player " + username + " is offline, vote saved as pending")
@@ -920,7 +920,7 @@ ServerEvents.commandRegistry(event => {
                   let count = Arguments.INTEGER.getResult(ctx, "count")
                   let server = ctx.getSource().getServer()
 
-                  let player = server.getPlayer(playerName)
+                  let player = server.getPlayerList().getPlayerByName(playerName)
                   if (!player) {
                     ctx.getSource().sendSystemMessage(Component.red("Player " + playerName + " not found or offline"))
                     return 0
