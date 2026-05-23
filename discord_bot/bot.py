@@ -17,6 +17,7 @@ import signal
 import socket
 import struct
 import time
+import traceback
 from typing import Optional
 
 import aiohttp
@@ -486,6 +487,19 @@ class MinecraftBridge(commands.Cog):
         self.poll_discord_events.change_interval(seconds=self.config.settings.events_poll_interval)
         await self.bot.wait_until_ready()
 
+    @poll_discord_events.error
+    async def poll_discord_events_error(self, error: BaseException) -> None:
+        logger.error(
+            "poll_discord_events loop crashed:\n%s",
+            "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        )
+        await asyncio.sleep(10)
+        try:
+            self.poll_discord_events.restart()
+            logger.info("poll_discord_events loop restarted after crash")
+        except Exception as e:
+            logger.error(f"Failed to restart poll_discord_events loop: {e}")
+
     @tasks.loop(seconds=5)
     async def poll_server_stats(self) -> None:
         """Poll server stats via RCON for status monitoring."""
@@ -563,6 +577,19 @@ class MinecraftBridge(commands.Cog):
     async def before_poll_stats(self) -> None:
         self.poll_server_stats.change_interval(seconds=self.config.settings.stats_check_interval)
         await self.bot.wait_until_ready()
+
+    @poll_server_stats.error
+    async def poll_server_stats_error(self, error: BaseException) -> None:
+        logger.error(
+            "poll_server_stats loop crashed:\n%s",
+            "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        )
+        await asyncio.sleep(10)
+        try:
+            self.poll_server_stats.restart()
+            logger.info("poll_server_stats loop restarted after crash")
+        except Exception as e:
+            logger.error(f"Failed to restart poll_server_stats loop: {e}")
 
     def sanitize_discord_message(self, content: str) -> str:
         """Sanitize Discord message for Minecraft."""
@@ -651,8 +678,12 @@ class MinecraftBridge(commands.Cog):
     @tasks.loop(seconds=600)
     async def update_channel_topic(self) -> None:
         """Update Discord channel topic with server stats."""
+        logger.info(
+            f"Topic update tick: last_stats={'set' if self.last_stats else 'None'} "
+            f"last_topic={self.last_topic!r}"
+        )
         if not self.last_stats:
-            logger.debug("No stats available for topic update")
+            logger.warning("No stats available for topic update (RCON returning nothing)")
             return
 
         try:
@@ -698,6 +729,19 @@ class MinecraftBridge(commands.Cog):
     @update_channel_topic.before_loop
     async def before_update_topic(self) -> None:
         await self.bot.wait_until_ready()
+
+    @update_channel_topic.error
+    async def update_channel_topic_error(self, error: BaseException) -> None:
+        logger.error(
+            "update_channel_topic loop crashed:\n%s",
+            "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        )
+        await asyncio.sleep(30)
+        try:
+            self.update_channel_topic.restart()
+            logger.info("update_channel_topic loop restarted after crash")
+        except Exception as e:
+            logger.error(f"Failed to restart update_channel_topic loop: {e}")
 
     @app_commands.command(name="players", description="Show online players on the Minecraft server")
     async def players_command(self, interaction: discord.Interaction) -> None:
