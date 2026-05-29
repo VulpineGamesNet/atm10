@@ -53,6 +53,8 @@ class Settings:
     stats_check_interval: int = 5  # seconds
     max_message_length: int = 256
     events_poll_interval: int = 2  # seconds - how often to poll discord_events table
+    offline_threshold: int = 12  # consecutive failed stats checks before marking offline
+    status_cooldown: int = 30  # seconds between online/offline status notifications
 
 
 @dataclass
@@ -134,6 +136,8 @@ def load_config(env_file: Optional[str] = ".env") -> Config:
         stats_check_interval=_get_env_int("STATS_CHECK_INTERVAL", 5),
         max_message_length=_get_env_int("MAX_MESSAGE_LENGTH", 256),
         events_poll_interval=_get_env_int("EVENTS_POLL_INTERVAL", 2),
+        offline_threshold=_get_env_int("OFFLINE_THRESHOLD", 12),
+        status_cooldown=_get_env_int("STATUS_COOLDOWN", 30),
     )
 
     return Config(

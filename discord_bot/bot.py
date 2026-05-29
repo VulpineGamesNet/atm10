@@ -51,10 +51,6 @@ class MinecraftBridge(commands.Cog):
     SERVER_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
     BOT_ICON_URL = "https://raw.githubusercontent.com/VulpineGamesNet/atm10/main/discord_bot/resources/vulpines.png"
 
-    # Debounce settings for status notifications
-    STATUS_COOLDOWN: int = 30  # seconds between status notifications
-    OFFLINE_THRESHOLD: int = 3  # consecutive failed checks before "offline"
-
     WEBHOOK_NAME = "Minecraft Bridge"
 
     RCON_SERVERDATA_AUTH = 3
@@ -63,6 +59,9 @@ class MinecraftBridge(commands.Cog):
     def __init__(self, bot: "DiscordMCBot", config: Config):
         self.bot = bot
         self.config = config
+        # Debounce settings (env-configurable via config.settings)
+        self.STATUS_COOLDOWN: int = config.settings.status_cooldown
+        self.OFFLINE_THRESHOLD: int = config.settings.offline_threshold
         self.last_stats: Optional[dict] = None
         self.rcon_lock = asyncio.Lock()
         self.last_topic: Optional[str] = None
@@ -700,7 +699,7 @@ class MinecraftBridge(commands.Cog):
             player_count = self.last_stats.get("playerCount", 0)
             uptime = self._round_uptime(self.last_stats.get("uptime", "0h 0m"))
 
-            topic = f"TPS: {tps:.1f} | Players: {player_count} | Uptime: {uptime}"
+            topic = f"TPS: {tps:.2f} | Players: {player_count} | Uptime: {uptime}"
 
             if self.last_topic == topic:
                 return

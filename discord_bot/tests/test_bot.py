@@ -578,7 +578,7 @@ class TestChannelTopicUpdate:
 
         mock_channel.edit.assert_called_once()
         topic = mock_channel.edit.call_args.kwargs["topic"]
-        assert topic == "TPS: 19.85 | Players: 42 | Uptime: 21h 1m"
+        assert topic == "TPS: 19.85 | Players: 42 | Uptime: 21h 0m"  # uptime floored to 10m by _round_uptime
 
     @pytest.mark.asyncio
     async def test_update_topic_skips_if_unchanged(self, bridge):
@@ -619,7 +619,7 @@ class TestServerStatusDetection:
 
         with patch.object(bridge, "get_stats_via_rcon", new_callable=AsyncMock, return_value=None):
             with patch.object(bridge, "send_webhook_embed", new_callable=AsyncMock) as mock_embed:
-                # Need OFFLINE_THRESHOLD (3) consecutive failures to trigger offline
+                # Need OFFLINE_THRESHOLD consecutive failures to trigger offline
                 for _ in range(bridge.OFFLINE_THRESHOLD):
                     await bridge.poll_server_stats()
 
